@@ -1,0 +1,13 @@
+/_tools
+__pycache__
+.api.log
+.caddy.log
+.DS_Store
+.htaccess
+/data
+.venv
+.claude
+.devin
+node_modules
+dist
+
