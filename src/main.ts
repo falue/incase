@@ -5,7 +5,7 @@ import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, defaultItem, itemHeight, loadProject, newProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type CaseKey, type Dim, type Item, type Project, type Shape } from './model'
+import { boxCorners, defaultItem, itemHeight, LAYER_COST, loadProject, newProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type CaseKey, type Dim, type Item, type Material, type Project, type Shape } from './model'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
 
@@ -205,7 +205,7 @@ const renderers: Record<Section, () => void> = { case: renderCase, materials: re
 
 /** Call after every model change; rebuilds the listed panels (structural changes), the rest is synced in place. */
 function changed(...rebuild: Section[]) {
-  if (project.stackAuto) project.stack = suggestStack(project.materials, project.box.depth)
+  if (project.stackAuto) project.stack = suggestStack(project.materials, project.box.depth, project.items.map(it => it.z + itemHeight(it)), project.layerCost)
   for (const s of new Set(rebuild)) renderers[s]()
   renderStack()
   renderPresetName()
@@ -389,8 +389,26 @@ function renderExport() {
   )
 }
 
+/**
+ * Trade-off slider for the auto stack; outside #stack so rebuilding the stack does not break a drag.
+ * Quadratic from 0 to `max` mm, so small values (where most of the effect is) get most of the travel.
+ */
+function renderStackWeight(max = 50) {
+  const slider = input('range', () => String(Math.sqrt((project.layerCost ?? LAYER_COST) / max)), el => {
+    project.layerCost = max * el.valueAsNumber ** 2
+    changed()
+  })
+  Object.assign(slider, { min: '0', max: '1', step: '0.01', className: 'grow' })
+  $('stack-weight').replaceChildren(
+    h('span', { className: 'hint', textContent: 'Exact fit' }),
+    slider,
+    h('span', { className: 'hint', textContent: 'Fewer layers' }),
+  )
+}
+
 function renderStack() {
   const { stack, materials, box } = project
+  $('stack-weight').hidden = !project.stackAuto
   const manual = (action: () => void) => () => {
     action()
     project.stackAuto = false
@@ -400,11 +418,15 @@ function renderStack() {
     const m = materials.find(m => m.id === id)!
     const a = z
     z += m.thickness
-    const select = h('select', { className: 'grow' }, ...materials.map(o => h('option', { value: o.id, textContent: `${o.name} (${fmtLen(o.thickness)} ${unit()})` })))
-    select.value = id
-    select.onchange = () => {
-      manual(() => (stack[i] = select.value))()
-      changed()
+    const label = (o: Material) => `${o.name} (${fmtLen(o.thickness)} ${unit()})`
+    const picker = () => {
+      const select = h('select', { className: 'grow' }, ...materials.map(o => h('option', { value: o.id, textContent: label(o) })))
+      select.value = id
+      select.onchange = () => {
+        manual(() => (stack[i] = select.value))()
+        changed()
+      }
+      return select
     }
     // clicking a row shows that layer in the top view
     const showLayer = (e: MouseEvent) => {
@@ -413,26 +435,28 @@ function renderStack() {
       scheduleViews()
     }
     return h('div', { className: 'row sortable', onclick: showLayer },
-      dragHandle((from, to) => (move(stack, from, to), (project.stackAuto = false), changed())),
+      // the auto stack picks and orders the materials itself; the empty span keeps the columns
+      project.stackAuto ? h('span') : dragHandle((from, to) => (move(stack, from, to), (project.stackAuto = false), changed())),
       h('span', { className: 'swatch', style: `background:${m.color}` }),
       h('span', { className: 'idx', textContent: String(i + 1), tip: 'Layer number, counted from the top (as on the export labels)' }),
-      select,
+      project.stackAuto ? h('span', { className: 'grow', textContent: label(m) }) : picker(),
       h('span', { className: 'hint range', textContent: `${fmtLen(a)}–${fmtLen(z)}`, tip: 'Depth range of this layer, measured from the foam top' }),
-      iconButton('✕', '', manual(() => stack.splice(i, 1))),
+      ...(project.stackAuto ? [] : [iconButton('✕', '', manual(() => stack.splice(i, 1)))]),
     )
   })
-  $('stack').replaceChildren(
-    h('div', { className: 'row' },
-      h('span', {
-        className: 'total' + (z > box.depth + 0.01 ? ' off' : ''),
-        textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
-        tip: 'A stack lower than the case is fine (it rests on the floor); a taller one does not fit',
-      }),
-      h('span', { className: 'grow' }),
-      project.stackAuto
-        ? h('span', { className: 'hint', textContent: 'auto stack', tip: 'The stack builds itself from the material list until you edit it' })
-        : button('Auto stack', 'Build the stack from the material list again, and keep it updated', () => (project.stackAuto = true)),
+  $('stack-head').replaceChildren(
+    h('span', {
+      className: 'total' + (z > box.depth + 0.01 ? ' off' : ''),
+      textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
+      tip: 'A stack lower than the case is fine (it rests on the floor); a taller one does not fit',
+    }),
+    h('span', { className: 'grow' }),
+    Object.assign(
+      button('Auto stack', 'When on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', () => (project.stackAuto = !project.stackAuto)),
+      { className: 'toggle' + (project.stackAuto ? ' active' : '') },
     ),
+  )
+  $('stack').replaceChildren(
     ...rows,
     button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id))),
   )
@@ -1027,6 +1051,7 @@ function renderAll() {
   renderCase()
   presetPicker()
   renderExport()
+  renderStackWeight()
   changed('materials', 'items', 'selection')
 }
 

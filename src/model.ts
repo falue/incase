@@ -57,6 +57,8 @@ export interface Project {
   /** Material ids, top → bottom. */
   stack: string[]
   stackAuto: boolean
+  /** Auto stack: mm of sinking one more layer must save (see suggestStack); missing in older saves. */
+  layerCost?: number
   items: Item[]
   labelColor: string
   /** Width of the cut (laser, mill, knife) in mm; the export offsets cut lines by half of it. */
@@ -143,26 +145,50 @@ export function setNotchCount(it: Item, count: number) {
   }
 }
 
-/** Fills `depth` with as few layers as possible, preferring materials earlier in the list; never exceeds depth. */
-export function suggestStack(materials: Material[], depth: number): string[] {
+/** True if cost `a` beats `b`, comparing entries in order. */
+const cheaper = (a: number[], b: number[]) => {
+  const k = a.findIndex((v, i) => v !== b[i])
+  return k >= 0 && a[k] < b[k]
+}
+
+export const LAYER_COST = 10
+
+/**
+ * Stack for a case `depth` deep, never exceeding it. Ranked by: filling the depth, then fewest layers plus least
+ * sinking of the objects (their `bottoms`, from the foam top, should land on layer boundaries), where one more layer
+ * is worth it only if it saves more than `layerCost` mm of sinking in total, then materials earlier in the list.
+ * Between the boundaries objects rest on, preferred materials go on top.
+ */
+export function suggestStack(materials: Material[], depth: number, bottoms: number[], layerCost = LAYER_COST): string[] {
   const units = materials.map(m => Math.round(m.thickness * 10))
   const target = Math.max(0, Math.round(depth * 10))
-  // best[s] = [layer count, preference cost, last material index] of the cheapest combination summing to s
-  const best: ([number, number, number] | undefined)[] = [[0, 0, -1]]
+  const bs = bottoms.map(b => Math.round(b * 10)).filter(b => b > 0)
+  // best[s]: cheapest stack summing to s; cost = [layers × layerCost + sinking, preference], its last layer spans from..s
+  const best: ({ cost: number[]; from: number; mat: number } | undefined)[] = [{ cost: [0, 0], from: 0, mat: -1 }]
   for (let s = 1; s <= target; s++) {
     units.forEach((u, i) => {
       const prev = u > 0 && u <= s ? best[s - u] : undefined
       if (!prev) return
-      const cur = best[s]
-      const cand: [number, number, number] = [prev[0] + 1, prev[1] + i, i]
-      if (!cur || cand[0] < cur[0] || (cand[0] === cur[0] && cand[1] < cur[1])) best[s] = cand
+      const sink = bs.reduce((sum, b) => (b > s - u && b <= s ? sum + s - b : sum), 0)
+      const cost = [prev.cost[0] + layerCost * 10 + sink, prev.cost[1] + i]
+      if (!best[s] || cheaper(cost, best[s]!.cost)) best[s] = { cost, from: s - u, mat: i }
     })
   }
-  let s = target
-  while (s > 0 && !best[s]) s--
-  const picks: number[] = []
-  for (; s > 0; s -= units[best[s]![2]]) picks.push(best[s]![2])
-  return picks.sort((a, b) => a - b).map(i => materials[i].id)
+  // objects reaching below the stack stand on the case floor, raised by the gap; worse than anything else
+  let end = 0, endCost = [Infinity]
+  best.forEach((b, s) => {
+    if (!b) return
+    const cost = [bs.reduce((sum, x) => sum + Math.max(0, x - s), 0), -s, ...b.cost]
+    if (cheaper(cost, endCost)) [end, endCost] = [s, cost]
+  })
+  const layers: { a: number; i: number }[] = []
+  for (let s = end; s > 0; s = best[s]!.from) layers.unshift({ a: best[s]!.from, i: best[s]!.mat })
+  const runs: number[][] = [[]]
+  for (const { a, i } of layers) {
+    runs.at(-1)!.push(i)
+    if (bs.some(b => b > a && b <= a + units[i])) runs.push([])
+  }
+  return runs.flatMap(r => r.sort((x, y) => x - y)).map(i => materials[i].id)
 }
 
 function defaultProject(): Project {
@@ -171,7 +197,7 @@ function defaultProject(): Project {
     { id: uid(), name: 'Foam 10', thickness: 10, color: '#ff0000' },
     { id: uid(), name: 'Foam 5', thickness: 5, color: '#0000ff' },
   ]
-  const stack = suggestStack(materials, 80)
+  const stack = suggestStack(materials, 80, [])
   const camera = { ...defaultItem('box', 'Camera', 0, materials.find(m => m.id === stack[0])!.thickness), l: 130, w: 80, h: 60, r: 8 }
   setNotchCount(camera, 1)
   return {
@@ -179,6 +205,7 @@ function defaultProject(): Project {
     materials,
     stack,
     stackAuto: true,
+    layerCost: LAYER_COST,
     items: [camera],
     labelColor: '#ff00ff',
     kerf: 0,
