@@ -125,27 +125,35 @@ export function computeLayers(p: Project): Layer[] {
   })
 }
 
-const AREA_TOL = 0.01 // mm², ignores rounding slivers
+export const AREA_TOL = 0.01 // mm², ignores rounding slivers
 
-/** Ids of items whose cuts come closer than the safe zone to another item's cuts or to the case wall, in any layer. */
-export function safeZoneConflicts(p: Project): Set<string> {
-  const s = p.box.safeZone
-  const conflicts = new Set<string>()
-  if (s <= 0) return conflicts
+/**
+ * How badly items break the safe zone, summed over all layers (mm²): the area of their cuts outside the wall's safe line
+ * plus the area of other items' cuts inside their own safe zone. 0 = clear. `only` limits the work to one item.
+ */
+export function safeZoneViolations(p: Project, only?: Item): Map<string, number> {
+  const s = Math.max(p.box.safeZone, 0)
+  const result = new Map<string, number>()
+  const area = (paths: PathsD) => Math.abs(areaPathsD(paths))
   for (const { a, outline } of slabs(p)) {
     const cuts = p.items.map(it => itemCuts(it, a, p.box.clearance))
-    const inner = outline ? offset([outline], -s) : []
+    const inner = outline ? (s ? offset([outline], -s) : [outline]) : []
     p.items.forEach((it, i) => {
-      if (!cuts[i].length) return
-      if (Math.abs(areaPathsD(differenceD(cuts[i], inner, FillRule.NonZero))) > AREA_TOL) conflicts.add(it.id)
-      const zone = offset(cuts[i], s)
+      if (!cuts[i].length || (only && it !== only)) return
+      const zone = s ? offset(cuts[i], s) : cuts[i]
+      let v = area(differenceD(cuts[i], inner, FillRule.NonZero))
       cuts.forEach((other, j) => {
-        if (j !== i && other.length && Math.abs(areaPathsD(intersectD(zone, other, FillRule.NonZero))) > AREA_TOL) conflicts.add(it.id)
+        if (j !== i && other.length) v += area(intersectD(zone, other, FillRule.NonZero))
       })
+      result.set(it.id, (result.get(it.id) ?? 0) + v)
     })
   }
-  return conflicts
+  return result
 }
+
+/** Ids of items whose cuts leave the case or come closer than the safe zone to another item's cuts or the wall, in any layer. */
+export const safeZoneConflicts = (p: Project) =>
+  new Set([...safeZoneViolations(p)].filter(([, v]) => v > AREA_TOL).map(([id]) => id))
 
 export const pathData = (paths: PathsD, dx = 0, dy = 0) =>
   paths.map(p => 'M' + p.map(q => `${(q.x + dx).toFixed(2)} ${(q.y + dy).toFixed(2)}`).join('L') + 'Z').join('')

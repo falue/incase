@@ -22,7 +22,10 @@
     <main id="viewports">
       <div class="pane" id="pane2d">
         <div id="view2d" class="view"></div>
-        <div class="overlay top-left"><span class="tag">Top</span><select id="layer-select" title="Overlay the cut lines of one layer"></select></div>
+        <div class="overlay top-left"><span class="tag">Top</span><select id="layer-select" title="Overlay the cut lines of one layer"></select>
+          <label class="check" title="Snap positions to a 5 mm / ⅛ in grid and rotation to 15°"><input type="checkbox" id="snap" /> Snap</label>
+          <label class="check" title="Objects cannot leave the case or enter another object's safe zone"><input type="checkbox" id="constrain" /> Keep clear</label>
+        </div>
       </div>
       <div class="splitter" id="splitter" title="Drag to resize · double-click to reset"></div>
       <div class="pane" id="pane3d">
@@ -47,6 +50,10 @@
     </aside>
 
     <footer id="statusbar"><span id="hint"></span><span id="warnings"></span></footer>
+
+    <div id="busy" hidden>
+      <div class="busy-box"><div class="spinner"></div><span id="busy-text"></span><button id="busy-abort" title="Esc">Abort</button></div>
+    </div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

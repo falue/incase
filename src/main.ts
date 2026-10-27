@@ -1,7 +1,9 @@
 import './style.css'
-import { computeLayers, safeZoneConflicts, stackTotal } from './geometry'
+import type { ArrangeResult } from './arrange'
+import { AREA_TOL, computeLayers, safeZoneConflicts, safeZoneViolations, stackTotal } from './geometry'
 import { exportSvg } from './export'
-import { defaultItem, defaultNotch, itemHeight, loadProject, parseProject, saveProject, suggestStack, uid, type Dim, type Item, type Project, type Shape } from './model'
+import { History } from './history'
+import { addNotch, defaultItem, itemHeight, loadProject, parseProject, saveProject, suggestStack, uid, type Dim, type Item, type Project, type Shape } from './model'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
 
@@ -26,6 +28,10 @@ const ICONS = {
   duplicate: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
   delete: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
   fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
+  even: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/>',
+  pack: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="5" rx="1"/><rect x="13" y="10" width="8" height="11" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
 const MM_PER_IN = 25.4
@@ -38,12 +44,14 @@ let project: Project = loadProject()
 let selectedId: string | null = null
 let layerIndex = -1 // -1 = no layer overlay
 let inches = pref('units') === 'in' // display only, the model is always mm
+const history = new History(JSON.stringify(project))
 
 const $ = (id: string) => document.getElementById(id)!
 /** Display format: at most 4 decimals. */
 const fmt = (v: number) => String(Math.round(v * 1e4) / 1e4)
 const fmtLen = (mm: number) => fmt(inches ? mm / MM_PER_IN : mm)
 const unit = () => (inches ? 'in' : 'mm')
+const snapStep = () => (inches ? MM_PER_IN / 8 : 5)
 const selected = () => project.items.find(it => it.id === selectedId)
 const swap = <T>(a: T[], i: number, j: number) => {
   if (j >= 0 && j < a.length) [a[i], a[j]] = [a[j], a[i]]
@@ -141,6 +149,7 @@ function changed(...rebuild: Section[]) {
   for (const s of new Set(rebuild)) renderers[s]()
   renderStack()
   syncInputs()
+  history.record(() => JSON.stringify(project))
   updateChrome()
   saveProject(project)
   scheduleViews()
@@ -190,6 +199,7 @@ function renderMaterials() {
       color(() => project.labelColor, v => (project.labelColor = v)),
       h('span', { className: 'hint', textContent: 'Label colour' }),
     ),
+    h('div', { className: 'props' }, prop('Laser kerf', len(() => project.kerf, v => (project.kerf = v)), 'wide')),
   )
 }
 
@@ -263,6 +273,40 @@ function duplicate(it: Item) {
   select(copy.id)
 }
 
+// runs in a worker while an overlay locks the UI; aborting discards the result
+let arranging: Worker | null = null
+
+function arrange(even: boolean) {
+  if (arranging) return
+  const worker = (arranging = new Worker(new URL('./arrange.worker.ts', import.meta.url), { type: 'module' }))
+  $('busy-text').textContent = even ? 'Arranging evenly…' : 'Packing tightly…'
+  $('busy').hidden = false
+  worker.onmessage = (e: MessageEvent<ArrangeResult>) => {
+    stopArranging()
+    for (const { id, ...at } of e.data.placements) Object.assign(project.items.find(it => it.id === id)!, at)
+    changed()
+    if (e.data.failed) $('hint').textContent = `${e.data.failed} object(s) did not fit and were left in place`
+  }
+  worker.postMessage({ project, even })
+}
+
+function stopArranging() {
+  arranging?.terminate()
+  arranging = null
+  $('busy').hidden = true
+}
+$('busy-abort').onclick = stopArranging
+
+/** Safe-zone violation of one item for the "keep clear" option (0 = clear). */
+const violation = (it: Item) => safeZoneViolations(project, it).get(it.id) ?? 0
+
+function restore(state: string | null) {
+  if (state === null) return
+  project = parseProject(state)
+  if (!selected()) selectedId = null
+  renderAll()
+}
+
 function remove(it: Item) {
   project.items = project.items.filter(o => o !== it)
   select(null)
@@ -302,14 +346,17 @@ function renderSelection() {
     h('h4', { textContent: 'Finger notches' }),
     ...it.notches.map((n, i) =>
       h('div', { className: 'row' },
-        prop('dx', len(() => n.dx, v => (n.dx = v))),
-        prop('dy', len(() => n.dy, v => (n.dy = v))),
+        prop('dx', len(() => n.dx, v => Object.assign(n, { dx: v, auto: false }))),
+        prop('dy', len(() => n.dy, v => Object.assign(n, { dy: v, auto: false }))),
         prop('Ø', len(() => n.d, v => (n.d = v))),
         prop('Depth', len(() => n.depth, v => (n.depth = v))),
         iconButton('✕', 'Remove notch', () => it.notches.splice(i, 1), 'selection'),
       ),
     ),
-    button('+ Notch', 'Add finger notch', () => it.notches.push(defaultNotch(it)), 'selection'),
+    button('+ Notch', 'Add finger notch (one top layer deep)', () => {
+      const top = project.materials.find(m => m.id === project.stack[0])
+      addNotch(it, top?.thickness ?? itemHeight(it))
+    }, 'selection'),
   )
 }
 
@@ -358,6 +405,7 @@ $('export-svg').onclick = () => download('incase.svg', exportSvg(project, comput
 segmented($('units'), [['mm', 'mm'], ['in', 'in']], () => unit(), v => {
   inches = v === 'in'
   setPref('units', v)
+  view2d.snapStep = snapStep()
   renderAll()
 })
 
@@ -383,7 +431,17 @@ $('theme').onclick = () => {
 
 // --- viewports ---
 
-const view2d = new View2D($('view2d'), select, () => changed(), mm => `${fmtLen(mm)} ${unit()}`)
+const view2d = new View2D($('view2d'), { select, change: () => changed(), len: mm => `${fmtLen(mm)} ${unit()}`, violation })
+view2d.snapStep = snapStep()
+for (const [key, apply] of [['snap', (on: boolean) => (view2d.snap = on)], ['constrain', (on: boolean) => (view2d.constrain = on)]] as const) {
+  const box = $(key) as HTMLInputElement
+  box.checked = pref(key) === '1'
+  apply(box.checked)
+  box.onchange = () => {
+    setPref(key, box.checked ? '1' : '0')
+    apply(box.checked)
+  }
+}
 const view3d = new View3D($('view3d'), select)
 applyTheme(pref('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))
 
@@ -462,11 +520,18 @@ const deleteTool = tool('delete', 'Delete (Del)', () => {
   const it = selected()
   if (it) remove(it)
 })
+const undoTool = tool('undo', 'Undo (⌘/Ctrl+Z)', () => restore(history.undo()))
+const redoTool = tool('redo', 'Redo (⇧⌘Z / Ctrl+Y)', () => restore(history.redo()))
 $('toolbar').replaceChildren(
   ...(Object.entries(SHAPE_KEYS) as [string, Shape][]).map(([key, shape]) => tool(shape, `${SHAPES[shape]} (${key.toUpperCase()})`, () => addItem(shape))),
   h('hr'),
   duplicateTool,
   deleteTool,
+  tool('even', 'Arrange evenly: largest equal gaps, centred (A)', () => arrange(true)),
+  tool('pack', 'Pack tightly at the safe zone, centred (⇧A)', () => arrange(false)),
+  h('hr'),
+  undoTool,
+  redoTool,
   h('hr'),
   tool('fit', 'Fit 3D view (F)', () => view3d.fit()),
 )
@@ -474,9 +539,11 @@ $('toolbar').replaceChildren(
 function updateChrome() {
   const it = selected()
   duplicateTool.disabled = deleteTool.disabled = !it
+  undoTool.disabled = !history.canUndo
+  redoTool.disabled = !history.canRedo
   $('hint').textContent = it
-    ? 'Drag to move · drag handle to rotate (Shift 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect'
-    : 'B box · C cylinder · L lying · S sphere · F fit 3D · 1 / 2 / 3 layout · drag a field label to scrub'
+    ? 'Drag to move · drag handle to rotate (Shift 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
+    : 'B C L S add · A arrange evenly, ⇧A pack · F fit 3D · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
 }
 
 let frame = 0
@@ -503,20 +570,34 @@ function renderAll() {
 }
 
 addEventListener('keydown', e => {
+  if (arranging) {
+    if (e.key === 'Escape') stopArranging()
+    return e.preventDefault()
+  }
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
   const key = e.key.toLowerCase()
   const plain = !e.metaKey && !e.ctrlKey && !e.altKey
   const it = selected()
-  const step = e.shiftKey ? 10 : 1
+  const step = (view2d.snap ? snapStep() : 1) * (e.shiftKey ? 10 : 1)
   const nudge: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
-  if (plain && SHAPE_KEYS[key]) addItem(SHAPE_KEYS[key])
+  const mod = e.metaKey || e.ctrlKey
+  if (mod && key === 'z') restore(e.shiftKey ? history.redo() : history.undo())
+  else if (mod && key === 'y') restore(history.redo())
+  else if (plain && SHAPE_KEYS[key]) addItem(SHAPE_KEYS[key])
+  else if (plain && key === 'a') arrange(!e.shiftKey)
   else if (plain && key === 'f') view3d.fit()
   else if (plain && LAYOUT_KEYS[key]) {
     setLayout(LAYOUT_KEYS[key])
     renderLayout()
   } else if (it && nudge[e.key]) {
-    it.x += nudge[e.key][0]
-    it.y += nudge[e.key][1]
+    const [dx, dy] = nudge[e.key]
+    const before = violation(it)
+    it.x += dx
+    it.y += dy
+    if (view2d.constrain && violation(it) > before + AREA_TOL) {
+      it.x -= dx
+      it.y -= dy
+    }
     changed()
   } else if (it && (e.key === 'Delete' || e.key === 'Backspace')) remove(it)
   else if (it && e.key === 'Escape') select(null)
