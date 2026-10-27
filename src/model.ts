@@ -44,6 +44,8 @@ export interface CaseDims {
   lidDepth: number
   /** Values a preset had no data for (0 or assumed); cleared per field once edited. */
   unknown: CaseKey[]
+  /** Label ("Brand - model") of the preset last applied, shown while the values still match it. */
+  preset?: string
 }
 
 /** Case values a preset can fill in. */
@@ -57,7 +59,7 @@ export interface Project {
   stackAuto: boolean
   items: Item[]
   labelColor: string
-  /** Laser kerf in mm; the export offsets cut lines by half of it. */
+  /** Width of the cut (laser, mill, knife) in mm; the export offsets cut lines by half of it. */
   kerf: number
 }
 

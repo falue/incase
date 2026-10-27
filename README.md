@@ -12,7 +12,7 @@ Everything runs locally in the browser: no account, no server, no data leaves yo
   (name, type, size), then arrange.
 - **Case**: inner length × width at the top and at the floor (tapered walls), depth, corner radius,
   floor-to-wall radius, lid depth. Search field for presets (Peli Protector, Air and Storm cases from their published
-  interior dimensions; Euro pallet with 1–4 wooden collars) and your own presets saved in the browser, via "Presets…".
+  interior dimensions; Euro pallet with 1–4 wooden collars) and your own presets saved in the browser, via "Brands…" (pick a brand, then a model, or type to search).
   Values a preset has no data for are marked with a red dot.
 - **Materials & stack**: a list of foam sheets (name, thickness, cut colour); the stack fills the case depth
   automatically and can be rearranged by drag & drop. The stack rests on the case floor.
@@ -32,7 +32,7 @@ Everything runs locally in the browser: no account, no server, no data leaves yo
   objects that reach into the lid show red.
 - **Auto-arrange**: spread objects evenly or pack them tightly (no-fit polygons, the method SVGnest uses).
 - **Export**: one SVG or DXF in mm with all layers side by side; cut lines in each material's colour as real lines and arcs,
-  object outlines and layer labels in a separate label colour, optional laser kerf compensation.
+  object outlines and layer labels in a separate label colour, optional kerf compensation (laser, mill or knife).
   PDF with 1:1 templates for cutting by hand: any paper size, layers larger than a sheet are split onto overlapping
   sheets with alignment crosses, plus a scale check square.
 - Undo / redo, autosave, project save / load as JSON, mm or inches, dark / light mode.

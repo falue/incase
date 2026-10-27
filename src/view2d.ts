@@ -164,8 +164,9 @@ export class View2D {
     this.selected = items.find(it => it.id === selectedId) ?? null
 
     const outline = (z: number) => pathData([caseOutline(b, z, z) ?? []])
+    const grid = this.snap ? this.snapStep : 10 // drawn grid: the snap grid while snapping
     const parts = [
-      `<defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M10 0H0V10" class="gridline"/></pattern></defs>`,
+      `<defs><pattern id="grid" width="${grid}" height="${grid}" patternUnits="userSpaceOnUse"><path d="M${grid} 0H0V${grid}" class="gridline"/></pattern></defs>`,
       `<rect x="-10000" y="-10000" width="20000" height="20000" fill="url(#grid)"/>`,
       `<path class="case-bottom" d="${outline(b.depth)}"/>`,
       hit(outline(b.depth), 'Case floor: inner outline at the bottom (taper and bottom edge radius)'),

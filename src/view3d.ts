@@ -13,6 +13,8 @@ const PER_CORNER = 8 // arc segments per corner of the case shell
 const CASE_LINE = 2.5 // px
 const FAR = 1e5 // mm, stands in for an open section side
 const FIT_MARGIN = 1.1
+const CUBE = 56 // px, view cube edge
+const TURN_MS = 300 // view cube camera turn
 const HIGHLIGHT = '#3d8bff' // current layer
 const SHELL = '#7f8fa3' // case and lid
 const OBJECT = '#ff9a3c'
@@ -128,14 +130,25 @@ export class View3D {
   private box: CaseDims | null = null
   private last: Parameters<View3D['update']> | null = null
 
-  constructor(private host: HTMLElement, onSelect: (id: string | null) => void) {
+  /** Set when a view cube click switched to orthographic; the next rotation switches back to perspective. */
+  private autoOrtho = false
+  private cube = document.createElement('div')
+  private cubeWrap = document.createElement('div')
+
+  /** `onProjection` is called when the camera switches between orthographic and perspective on its own. */
+  constructor(private host: HTMLElement, onSelect: (id: string | null) => void, private onProjection: () => void) {
     this.renderer.setPixelRatio(devicePixelRatio)
     this.renderer.localClippingEnabled = true
     const canvas = this.renderer.domElement
-    host.append(canvas)
+    host.append(canvas, this.viewCube())
     // a click without dragging selects the object under the pointer
     let down = { x: 0, y: 0 }
     canvas.addEventListener('pointerdown', e => (down = { x: e.clientX, y: e.clientY }))
+    canvas.addEventListener('pointermove', e => {
+      // a left drag without modifiers rotates: that leaves the side view the cube set up
+      const rotating = e.buttons === 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4
+      if (rotating && this.cubeWrap.classList.contains('aligned')) this.leaveSideView()
+    })
     canvas.addEventListener('pointerup', e => {
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return
       const r = canvas.getBoundingClientRect()
@@ -212,6 +225,74 @@ export class View3D {
 
   private draw() {
     this.renderer.render(this.scene, this.camera)
+    // the view cube shows the camera's rotation (three's y-up frame mirrored into CSS's y-down frame)
+    const e = new THREE.Matrix4().makeRotationFromQuaternion(this.camera.quaternion).invert().elements
+    this.cube.style.transform = `matrix3d(${e[0]},${-e[1]},${e[2]},0,${-e[4]},${e[5]},${-e[6]},0,${e[8]},${-e[9]},${e[10]},0,0,0,0,1)`
+  }
+
+  /** Small cube top right; clicking a face looks at the case from that side. */
+  private viewCube() {
+    const half = CUBE / 2
+    const faces: [string, string, THREE.Vector3][] = [
+      ['Front', `translateZ(${half}px)`, new THREE.Vector3(0, 0, 1)],
+      ['Back', `rotateY(180deg) translateZ(${half}px)`, new THREE.Vector3(0, 0, -1)],
+      ['Right', `rotateY(90deg) translateZ(${half}px)`, new THREE.Vector3(1, 0, 0)],
+      ['Left', `rotateY(-90deg) translateZ(${half}px)`, new THREE.Vector3(-1, 0, 0)],
+      // straight up/down is a pole for the orbit controls: tilt a hair towards the front
+      ['Top', `rotateX(90deg) translateZ(${half}px)`, new THREE.Vector3(0, 1, 1e-3)],
+      ['Bottom', `rotateX(-90deg) translateZ(${half}px)`, new THREE.Vector3(0, -1, 1e-3)],
+    ]
+    this.cube.className = 'cube'
+    this.cube.append(...faces.map(([label, transform, dir]) =>
+      Object.assign(document.createElement('div'), { className: 'face', textContent: label, onclick: () => this.viewFrom(dir), style: `transform: ${transform}` })))
+    // after a side was chosen, arrows turn the view by 90° to the neighbouring side
+    const arrows = (['up', 'down', 'left', 'right'] as const).map(side =>
+      Object.assign(document.createElement('button'), { className: `turn ${side}`, onclick: () => this.turn(side) }))
+    this.cubeWrap.className = 'viewcube'
+    this.cubeWrap.append(this.cube, ...arrows)
+    return this.cubeWrap
+  }
+
+  /** Looks at the neighbouring side: the one to the right / left / above / below on screen. */
+  private turn(side: 'up' | 'down' | 'left' | 'right') {
+    const screen = side === 'up' || side === 'down' ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
+    const v = screen.applyQuaternion(this.camera.quaternion).multiplyScalar(side === 'down' || side === 'left' ? -1 : 1)
+    // snap to the nearest main axis
+    const parts = [v.x, v.y, v.z], i = parts.reduce((best, c, k) => (Math.abs(c) > Math.abs(parts[best]) ? k : best), 0)
+    const dir = new THREE.Vector3().setComponent(i, Math.sign(parts[i]))
+    if (i === 1) dir.addScaledVector(this.camera.position.clone().sub(this.controls.target).normalize(), 1e-3) // off the pole, towards the old view
+    this.viewFrom(dir)
+  }
+
+  /** The user rotated away from a cube side: hide the arrows, back to perspective if the cube switched to orthographic. */
+  private leaveSideView() {
+    this.cubeWrap.classList.remove('aligned')
+    if (!this.autoOrtho) return
+    this.autoOrtho = false
+    this.setOrthographic(false)
+    this.onProjection()
+  }
+
+  /** Turns the camera to look from `dir` (same target and distance), switching to orthographic for the view. */
+  private viewFrom(dir: THREE.Vector3) {
+    this.cubeWrap.classList.add('aligned')
+    if (!this.isOrthographic) {
+      this.setOrthographic(true)
+      this.autoOrtho = true
+      this.onProjection()
+    }
+    const target = this.controls.target, cam = this.camera
+    const dist = cam.position.distanceTo(target)
+    const from = cam.position.clone().sub(target).normalize()
+    const turn = new THREE.Quaternion().setFromUnitVectors(from, dir.clone().normalize())
+    const start = performance.now()
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / TURN_MS), k = t * t * (3 - 2 * t)
+      cam.position.copy(target).addScaledVector(from.clone().applyQuaternion(new THREE.Quaternion().slerp(turn, k)), dist)
+      this.controls.update()
+      if (t < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
   }
 
   /** `current` is the layer shown in the top view; it is highlighted. */

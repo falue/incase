@@ -35,7 +35,7 @@
   --hover: #303137;
   --selected: #233552;
   --canvas: #1b1c1f;
-  --gridline: #26272b;
+  --gridline: #34363d;
   --ink: #c9cbd0;
   --ink-muted: #6c707a;
   --view3d: #222327;
@@ -49,7 +49,7 @@ body {
   margin: 0;
   height: 100vh;
   display: grid;
-  grid-template: 'top top top top' 38px 'global view tools objects' minmax(0, 1fr) 'status status status status' 24px / 300px minmax(0, 1fr) 44px 300px;
+  grid-template: 'top top top top' 38px 'global tools view objects' minmax(0, 1fr) 'status status status status' 24px / 300px 44px minmax(0, 1fr) 300px;
   background: var(--bg);
   overflow: hidden;
 }
@@ -83,20 +83,23 @@ input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
 input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); border-radius: 4px; }
 
 /* segmented control: one active option */
-.seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: 6px; background: var(--panel-2); }
-.seg button { padding: 3px 10px; background: none; color: var(--muted); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel-2); }
+.seg button { padding: 3px 10px; border-radius: 0; background: none; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
 .seg button.active { background: var(--accent); color: var(--accent-text); }
 
 /* top bar */
 /* shares the page columns so the layout switch sits above the viewports */
 #topbar { grid-area: top; display: grid; grid-template-columns: subgrid; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); }
-.brand { padding: 0 10px; font-weight: 700; letter-spacing: 0.02em; }
+.brand { display: flex; align-items: center; gap: 6px; padding: 0 10px; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; }
+/* the logo is white in the file: used as a mask it takes the text colour in both themes */
+.logo { width: 18px; height: 14px; background: currentColor; mask: url('./icon.svg') center / contain no-repeat; }
 
-#topbar .bar { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
+#topbar .bar { grid-column: 3 / -1; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
 .spacer { flex: 1; }
 
 /* tool strip */
-#toolbar { grid-area: tools; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: var(--panel); border-left: 1px solid var(--line); }
+#toolbar { grid-area: tools; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: var(--panel); border-right: 1px solid var(--line); }
 #toolbar hr { width: 24px; border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .tool { width: 34px; height: 34px; padding: 0; display: grid; place-items: center; background: none; color: var(--muted); }
 .tool:hover { background: var(--hover); color: var(--text); }
@@ -149,7 +152,8 @@ details { border-bottom: 1px solid var(--line); }
 details > div { padding: 0 10px 10px; }
 summary { padding: 8px 10px; font-weight: 600; cursor: pointer; user-select: none; list-style: none; }
 summary::-webkit-details-marker { display: none; }
-summary::before { content: '▸'; display: inline-block; width: 14px; color: var(--muted); transition: transform 0.1s; }
+/* fold triangle, centred in its box so it turns about its own middle */
+summary::before { content: ''; display: inline-block; width: 9px; height: 9px; margin-right: 7px; background: var(--muted); clip-path: polygon(20% 8%, 92% 50%, 20% 92%); transition: transform 0.15s; }
 details[open] > summary::before { transform: rotate(90deg); }
 summary small, .hint { font-weight: normal; color: var(--muted); }
 
@@ -257,3 +261,22 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 .object-table input:disabled { opacity: 0.3; }
 #export .row button { flex: 1; }
 .prop > input[type='color'] { flex: none; width: 22px; margin: 1px 4px 1px auto; }
+.grid-field .prop { width: 92px; background: var(--panel); }
+
+/* view cube: below the Ortho | Persp switch, turns with the camera */
+/* view cube top right; arrows around it after a side was chosen */
+.viewcube { position: absolute; z-index: 1; top: 4px; right: 4px; width: 92px; height: 92px; }
+.cube { position: absolute; inset: 18px; transform-style: preserve-3d; }
+.viewcube .turn { position: absolute; width: 14px; height: 14px; padding: 0; border-radius: 0; background: var(--muted); visibility: hidden; cursor: pointer; }
+.viewcube.aligned .turn { visibility: visible; }
+.viewcube .turn:hover { background: var(--accent); }
+.viewcube .up { top: 2px; left: 39px; clip-path: polygon(50% 15%, 90% 85%, 10% 85%); }
+.viewcube .down { bottom: 2px; left: 39px; clip-path: polygon(10% 15%, 90% 15%, 50% 85%); }
+.viewcube .left { left: 2px; top: 39px; clip-path: polygon(15% 50%, 85% 10%, 85% 90%); }
+.viewcube .right { right: 2px; top: 39px; clip-path: polygon(15% 10%, 85% 50%, 15% 90%); }
+.cube .face {
+  position: absolute; inset: 0; display: grid; place-items: center; font-size: 10px; font-weight: 600; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line); backface-visibility: hidden; cursor: pointer; user-select: none; opacity: 0.92;
+}
+.cube .face:hover { color: var(--accent-text); background: var(--accent); }
+#fit-3d { width: 28px; height: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }

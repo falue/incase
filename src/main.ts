@@ -71,7 +71,6 @@ const $ = (id: string) => document.getElementById(id)!
 const fmt = (v: number) => String(Math.round(v * 1e4) / 1e4)
 const fmtLen = (mm: number) => fmt(inches ? mm / MM_PER_IN : mm)
 const unit = () => (inches ? 'in' : 'mm')
-const snapStep = () => (inches ? MM_PER_IN / 8 : 5)
 const selected = () => project.items.find(it => it.id === selectedId)
 
 /** Creates an element; `tip` becomes its hover help (see the tooltip below). */
@@ -157,26 +156,31 @@ const move = <T>(a: T[], from: number, to: number) => a.splice(to, 0, ...a.splic
 function dragHandle(drop: (from: number, to: number) => void) {
   const grip = h('span', { className: 'grip', textContent: '⠿', tip: 'Drag to reorder' })
   grip.onpointerdown = e => {
+    e.preventDefault()
     const row = grip.closest<HTMLElement>('.sortable')!, list = row.parentElement!
     const rows = () => [...list.querySelectorAll<HTMLElement>(':scope > .sortable')]
     const from = rows().indexOf(row)
-    grip.setPointerCapture(e.pointerId)
     row.classList.add('dragging')
-    grip.onpointermove = m => {
+    // listen on the window: moving the row in the DOM would drop a pointer capture on the grip
+    const move = (m: PointerEvent) => {
       const others = rows().filter(r => r !== row)
       const to = others.filter(r => {
         const b = r.getBoundingClientRect()
         return b.top + b.height / 2 < m.clientY
       }).length
+      if (to === rows().indexOf(row)) return
       if (to < others.length) others[to].before(row)
-      else others.at(-1)?.after(row)
+      else others.at(-1)!.after(row)
     }
-    grip.onpointerup = () => {
-      grip.onpointermove = null
+    const up = () => {
+      removeEventListener('pointermove', move)
+      removeEventListener('pointerup', up)
       row.classList.remove('dragging')
       const to = rows().indexOf(row)
       if (to !== from) drop(from, to)
     }
+    addEventListener('pointermove', move)
+    addEventListener('pointerup', up)
   }
   return grip
 }
@@ -204,6 +208,7 @@ function changed(...rebuild: Section[]) {
   if (project.stackAuto) project.stack = suggestStack(project.materials, project.box.depth)
   for (const s of new Set(rebuild)) renderers[s]()
   renderStack()
+  renderPresetName()
   syncInputs()
   history.record(() => JSON.stringify(project))
   updateChrome()
@@ -246,56 +251,83 @@ function renderCase() {
   )
 }
 
-/** Search field for case presets: type part of a name, Enter or click applies it (undoable). */
-function presetPicker() {
-  const search = h('input', { type: 'text', className: 'grow', placeholder: 'Preset, e.g. Peli 1500 or Euro pallet' })
-  withTip(search, 'Fills in the case from a preset. Peli is a trademark of Pelican Products, Inc.; not affiliated')
-  const list = h('div', { className: 'preset-list', hidden: true })
-  let matches: Preset[] = []
-  let active = 0
+/** "Brand - model" (model names are unique only within a brand); your own presets by their name. */
+const presetLabel = (p: Preset) => (p.user ? p.name : `${p.group} - ${p.name}`)
 
+/** Shows the applied preset next to the Case title, as long as no case size was changed since. */
+function renderPresetName() {
+  const p = [...userPresets(), ...PRESETS].find(p => presetLabel(p) === project.box.preset)
+  $('case-preset').textContent = p && CASE_KEYS.every(k => project.box[k] === p.values[k]) ? presetLabel(p) : ''
+}
+
+/**
+ * Presets popup: pick a brand, then a model (Enter or click applies it, undoable); typing searches all brands.
+ */
+function presetPicker() {
+  const search = h('input', { type: 'text', className: 'grow', placeholder: 'Search, e.g. Peli 1500 or 600×400' })
+  withTip(search, 'Fills in the case from a preset. Peli is a trademark of Pelican Products, Inc.; RAKO of Georg Utz; not affiliated')
+  const list = h('div', { className: 'preset-list' })
+  type Entry = { label: string; hint: string; pick: () => void; remove?: () => void }
+  let entries: Entry[] = []
+  let active = 0
+  let brand: string | null = null // brand whose models are listed while the search is empty
+
+  const all = () => [...userPresets(), ...PRESETS]
   const apply = (p: Preset) => {
     Object.assign(project.box, p.values)
     project.box.unknown = [...p.unknown]
+    project.box.preset = presetLabel(p)
     search.value = ''
     search.blur()
     changed('case')
   }
+  const preset = (p: Preset): Entry => ({
+    label: p.name,
+    hint: p.user ? 'yours' : p.group,
+    pick: () => apply(p),
+    remove: p.user ? () => (saveUserPresets(userPresets().filter(u => u.name !== p.name)), show()) : undefined,
+  })
+  const open = (b: string | null) => () => {
+    brand = b
+    active = b ? 1 : 0 // a brand opens on its first model, below the way back
+    show()
+  }
   const show = () => {
     const words = search.value.toLowerCase().split(/\s+/).filter(Boolean)
-    matches = [...userPresets(), ...PRESETS].filter(p => words.every(w => `${p.name} ${p.group}`.toLowerCase().includes(w)))
-    active = Math.min(active, Math.max(0, matches.length - 1))
-    list.hidden = !matches.length
-    list.replaceChildren(...matches.map((p, i) => {
+    if (words.length) entries = all().filter(p => words.every(w => `${p.name} ${p.group}`.toLowerCase().includes(w))).map(preset)
+    else if (brand) entries = [{ label: '‹ All brands', hint: '', pick: open(null) }, ...all().filter(p => p.group === brand).map(preset)]
+    else {
+      entries = [...new Set(all().map(p => p.group))].map(b => ({
+        label: b === 'yours' ? 'Yours' : b,
+        hint: `${all().filter(p => p.group === b).length} ›`,
+        pick: open(b),
+      }))
+    }
+    active = Math.min(active, Math.max(0, entries.length - 1))
+    list.replaceChildren(...entries.map((entry, i) => {
       const row = h('div', { className: 'preset' + (i === active ? ' active' : '') },
-        h('span', { className: 'grow', textContent: p.name }),
-        h('span', { className: 'hint', textContent: p.user ? 'yours' : p.group }))
+        h('span', { className: 'grow', textContent: entry.label }),
+        h('span', { className: 'hint', textContent: entry.hint }))
       row.onmousedown = e => {
-        e.preventDefault() // keep focus until applied
-        if ((e.target as Element).closest('.remove')) return
-        apply(p)
+        e.preventDefault() // keep the field focused so the popup stays open
+        if (!(e.target as Element).closest('.remove')) entry.pick()
       }
-      if (p.user) {
+      if (entry.remove) {
         row.append(Object.assign(h('button', { className: 'icon remove', textContent: '✕', tip: 'Delete this preset' }), {
-          onmousedown: (e: MouseEvent) => {
-            e.preventDefault()
-            saveUserPresets(userPresets().filter(u => u.name !== p.name))
-            show()
-          },
+          onmousedown: (e: MouseEvent) => (e.preventDefault(), entry.remove!()),
         }))
       }
       return row
     }))
     list.children[active]?.scrollIntoView({ block: 'nearest' })
   }
-  search.onfocus = show
   search.oninput = () => ((active = 0), show())
   search.onblur = () => ($('presets').hidden = true)
   search.onkeydown = e => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      active = (active + (e.key === 'ArrowDown' ? 1 : -1) + matches.length) % Math.max(1, matches.length)
+      active = (active + (e.key === 'ArrowDown' ? 1 : -1) + entries.length) % Math.max(1, entries.length)
       show()
-    } else if (e.key === 'Enter' && matches[active]) apply(matches[active])
+    } else if (e.key === 'Enter' && entries[active]) entries[active].pick()
     else if (e.key === 'Escape') search.blur()
     else return
     e.preventDefault()
@@ -309,8 +341,13 @@ function presetPicker() {
   save.className = 'icon'
   save.onmousedown = e => e.preventDefault() // keep the field focused so the popup stays open
   $('presets').replaceChildren(h('div', { className: 'row' }, search, save), list)
-  $('presets-button').onclick = () => {
+  const toggle = $('presets-button')
+  toggle.onmousedown = e => e.preventDefault() // keep the field focused, so a click on the button can close the popup
+  toggle.onclick = () => {
+    if (!$('presets').hidden) return search.blur() // closes it
     $('presets').hidden = false
+    search.value = ''
+    open(null)()
     search.focus()
   }
 }
@@ -342,10 +379,10 @@ function renderExport() {
   $('export').replaceChildren(
     h('div', { className: 'props' },
       prop('Label colour', color(() => project.labelColor, v => (project.labelColor = v)), 'Layer labels and object outlines in the exports; must differ from all material colours'),
-      prop('Laser kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the laser cut; exported pieces grow by half of it so they come out at nominal size'),
+      prop('Kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the cut (laser beam, mill or knife); exported pieces grow by half of it so they come out at nominal size'),
     ),
     h('div', { className: 'row' },
-      h('button', { className: 'primary', textContent: 'SVG', tip: 'All layers side by side as one SVG in mm, ready for the laser', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project)), 'image/svg+xml') }),
+      h('button', { textContent: 'SVG', tip: 'All layers side by side as one SVG in mm, ready for the laser', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project)), 'image/svg+xml') }),
       h('button', { textContent: 'DXF', tip: 'Same as the SVG, as a DXF (R12, mm) with one layer per material', onclick: () => download('incase.dxf', exportDxf(project, computeLayers(project)), 'application/dxf') }),
       h('button', { textContent: 'PDF', tip: 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', onclick: pdfDialog }),
     ),
@@ -393,8 +430,8 @@ function renderStack() {
       }),
       h('span', { className: 'grow' }),
       project.stackAuto
-        ? h('span', { className: 'hint', textContent: 'auto-filled', tip: 'The stack refills itself from the material list until you edit it' })
-        : button('Auto-fill', 'Refill from the material list', () => (project.stackAuto = true)),
+        ? h('span', { className: 'hint', textContent: 'auto stack', tip: 'The stack builds itself from the material list until you edit it' })
+        : button('Auto stack', 'Build the stack from the material list again, and keep it updated', () => (project.stackAuto = true)),
     ),
     ...rows,
     button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id))),
@@ -807,7 +844,6 @@ $('setup').onclick = guidedSetup
 segmented($('units'), [['mm', 'mm', ''], ['in', 'in', 'Projects and exports stay in mm']], () => unit(), v => {
   inches = v === 'in'
   setPref('units', v)
-  view2d.snapStep = snapStep()
   renderAll()
 })
 
@@ -835,17 +871,31 @@ $('theme').onclick = () => {
 // --- viewports ---
 
 const view2d = new View2D($('view2d'), { select, change: () => changed(), len: mm => `${fmtLen(mm)} ${unit()}`, violation, createPolygon })
-view2d.snapStep = snapStep()
-for (const [key, apply] of [['snap', (on: boolean) => (view2d.snap = on)], ['constrain', (on: boolean) => (view2d.constrain = on)]] as const) {
+view2d.snapStep = Number(pref('grid') ?? 5)
+const showGrid = (on: boolean) => {
+  view2d.snap = on
+  $('grid-field').hidden = !on // the grid size is only asked for while snapping
+}
+for (const [key, apply] of [['snap', showGrid], ['constrain', (on: boolean) => (view2d.constrain = on)]] as const) {
   const box = $(key) as HTMLInputElement
   box.checked = pref(key) === '1'
   apply(box.checked)
   box.onchange = () => {
     setPref(key, box.checked ? '1' : '0')
     apply(box.checked)
+    scheduleViews()
   }
 }
-const view3d = new View3D($('view3d'), select)
+
+/** Grid size field next to "Snap to grid", in the display unit. */
+function renderGridField() {
+  $('grid-field').replaceChildren(prop(unit(), size(() => view2d.snapStep, v => {
+    view2d.snapStep = Math.max(0.1, v)
+    setPref('grid', String(view2d.snapStep))
+  }), 'Grid size: snap step and the grid drawn in the top view'))
+}
+let renderCamera = () => {} // the Ortho | Persp switch, set up below
+const view3d = new View3D($('view3d'), select, () => renderCamera())
 applyTheme(pref('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))
 
 const splitter = $('splitter')
@@ -908,7 +958,7 @@ for (const axis of ['x', 'y'] as const) {
 }
 
 view3d.setOrthographic(pref('camera') !== 'persp')
-segmented($('camera'), [['ortho', 'Ortho', 'Orthographic: no perspective distortion, sizes compare directly'], ['persp', 'Persp', '']], () => (view3d.isOrthographic ? 'ortho' : 'persp'), v => {
+renderCamera = segmented($('camera'), [['ortho', 'Ortho', 'Orthographic: no perspective distortion, sizes compare directly'], ['persp', 'Persp', '']], () => (view3d.isOrthographic ? 'ortho' : 'persp'), v => {
   view3d.setOrthographic(v === 'ortho')
   setPref('camera', v)
 })
@@ -937,9 +987,8 @@ $('toolbar').replaceChildren(
   h('hr'),
   undoTool,
   redoTool,
-  h('hr'),
-  tool('fit', 'Fit 3D view (F)', () => view3d.fit()),
 )
+$('fit-3d').replaceWith(Object.assign(tool('fit', 'Fit the case into the 3D view (F)', () => view3d.fit()), { id: 'fit-3d' }))
 
 function updateChrome() {
   const it = selected()
@@ -974,6 +1023,7 @@ function scheduleViews() {
 }
 
 function renderAll() {
+  renderGridField()
   renderCase()
   presetPicker()
   renderExport()
@@ -991,7 +1041,7 @@ addEventListener('keydown', e => {
   const key = e.key.toLowerCase()
   const plain = !e.metaKey && !e.ctrlKey && !e.altKey
   const it = selected()
-  const step = (view2d.snap ? snapStep() : 1) * (e.shiftKey ? 10 : 1)
+  const step = (view2d.snap ? view2d.snapStep : 1) * (e.shiftKey ? 10 : 1)
   const nudge: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
   const mod = e.metaKey || e.ctrlKey
   if (view2d.isDrawing) {
