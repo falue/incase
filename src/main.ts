@@ -406,7 +406,8 @@ function renderStackWeight(max = 50) {
   )
 }
 
-function renderStack() {
+/** `starMm`: mm of misfit (objects off a layer top, stack short of the case) that cost one of the 5 stars. */
+function renderStack(starMm = 5) {
   const { stack, materials, box } = project
   $('stack-weight').hidden = !project.stackAuto
   const manual = (action: () => void) => () => {
@@ -456,6 +457,18 @@ function renderStack() {
       { className: 'toggle' + (project.stackAuto ? ' active' : '') },
     ),
   )
+  // how far each object's cut misses a layer boundary, and the stack the case depth
+  const off = project.items.map(it => ({ name: it.name, d: Math.abs(resting(project, it).z - it.z) })).filter(o => o.d > 0.01)
+  const worst = off.reduce((w, o) => (o.d > w.d ? o : w), { name: '', d: 0 })
+  const short = box.depth - z
+  const total = off.reduce((sum, o) => sum + o.d, 0)
+  const misses = [
+    off.length && `objects off by ${fmtLen(total)} ${unit()} in total (most: ${worst.name}, ${fmtLen(worst.d)})`,
+    short > 0.01 && `stack ${fmtLen(short)} ${unit()} short of the case depth`,
+  ].filter(Boolean)
+  const score = Math.max(0, 5 - Math.floor((total + (short > 0.01 ? short : 0)) / starMm))
+  $('stack-score').dataset.tip = `Fit ${score}/5: ${misses.length ? misses.join(' · ') : 'every object sits right on a layer top and the stack fills the case'}. One star less per ${fmtLen(starMm)} ${unit()} off`
+  $('stack-score').replaceChildren(...[0, 1, 2, 3, 4].map(i => h('span', { className: i < score ? '' : 'miss', textContent: '★' })))
   $('stack').replaceChildren(
     ...rows,
     ...(project.stackAuto ? [] : [button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id)))]),
