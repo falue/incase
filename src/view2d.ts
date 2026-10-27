@@ -1,5 +1,5 @@
 import { FillRule, unionD } from 'clipper2-ts'
-import { AREA_TOL, caseOutline, itemCuts, offset, pathData, place, type Layer } from './geometry'
+import { AREA_TOL, caseOutline, itemCuts, objectOutline, offset, pathData, place, type Layer } from './geometry'
 import { itemSize, perimeterParam, perimeterPoint, type Item, type Project } from './model'
 
 const NS = 'http://www.w3.org/2000/svg'
@@ -18,7 +18,7 @@ export interface View2DHost {
   change(): void
   /** Formats a length in mm for the tooltips. */
   len(mm: number): string
-  /** How badly the item's current placement breaks the case wall and safe zones (0 = clear). */
+  /** How badly the item's current placement breaks the min. wall (0 = clear). */
   violation(it: Item): number
 }
 
@@ -36,7 +36,7 @@ export class View2D {
   /** Snap positions to `snapStep` (mm) and rotation to 15°. */
   snap = false
   snapStep = 5
-  /** Refuse moves that make an item's safe-zone violation worse (so items in conflict can still be pulled out). */
+  /** Refuse moves that make an item's min. wall violation worse (so items in conflict can still be pulled out). */
   constrain = false
   private svg = document.createElementNS(NS, 'svg')
   private items: Item[] = []
@@ -83,17 +83,17 @@ export class View2D {
     ]
     // lines and their hover areas go below the items so they never block dragging
     const top = caseOutline(b, 0, 0)
-    if (b.safeZone > 0 && top) {
-      const d = pathData(offset([top], -b.safeZone))
-      parts.push(`<path class="zone" d="${d}"/>`, hit(d, `Safe zone to the wall (${this.ctl.len(b.safeZone)}): cuts must stay inside this line`))
+    if (b.minWall > 0 && top) {
+      const d = pathData(offset([top], -b.minWall))
+      parts.push(`<path class="zone" d="${d}"/>`, hit(d, `Min. wall to the case (${this.ctl.len(b.minWall)}): cuts must stay inside this line`))
     }
-    const footprints = p.items.map(it => unionD(itemCuts(it, -Infinity, b.clearance), FillRule.NonZero))
-    if (b.safeZone > 0) {
+    const footprints = p.items.map(it => unionD(itemCuts(it, -Infinity, b.fit), FillRule.NonZero))
+    if (b.minWall > 0) {
       p.items.forEach((it, i) => {
         const conflict = conflicts.has(it.id)
-        const d = pathData(offset(footprints[i], b.safeZone))
+        const d = pathData(offset(footprints[i], b.minWall))
         parts.push(`<path class="zone${conflict ? ' conflict' : ''}" d="${d}"/>`,
-          hit(d, `Safe zone of ${it.name} (${this.ctl.len(b.safeZone)}): other cuts and the wall must stay outside${conflict ? ' · VIOLATED' : ''}`))
+          hit(d, `Min. wall around ${it.name} (${this.ctl.len(b.minWall)}): other cuts and the case must stay outside${conflict ? ' · VIOLATED' : ''}`))
       })
     }
     for (const [l, where] of [[layers[index - 1], 'above'], [layers[index + 1], 'below']] as const) {
@@ -101,15 +101,20 @@ export class View2D {
     }
     const layerPaths = layer ? pathData(layer.paths) : ''
     if (layer) parts.push(hit(layerPaths, `Layer ${layer.index + 1} cut lines · ${layer.material.name}`))
+    // the object's own outline; its hover area sits below the items
+    const outlines = p.items.map(it => pathData(objectOutline(it, -Infinity)))
+    p.items.forEach((it, i) => parts.push(hit(outlines[i], `${it.name}: the object itself, without the fit (exported in the label colour)`)))
     p.items.forEach((it, i) => {
-      const tip = `${it.name}: cut outline incl. clearance and notches · drag to move`
+      const tip = `${it.name}: cut outline incl. fit and notches · drag to move`
       parts.push(`<path data-id="${it.id}" data-tip="${esc(tip)}" class="item${it === this.selected ? ' selected' : ''}" d="${pathData(footprints[i])}"/>`)
     })
+    // outlines under the cut lines, so with fit 0 the cut line stays visible
+    for (const d of outlines) parts.push(`<path class="object-outline" stroke="${p.labelColor}" d="${d}"/>`)
     if (layer) parts.push(`<path class="layer" stroke="${layer.material.color}" d="${layerPaths}"/>`)
     for (const it of p.items) parts.push(`<text class="name" x="${it.x}" y="${it.y}">${esc(it.name)}</text>`)
     if (this.selected) {
       const it = this.selected
-      const h = this.handle(it, b.clearance)
+      const h = this.handle(it, b.fit)
       parts.push(`<line class="handle-line" x1="${it.x}" y1="${it.y}" x2="${h.x}" y2="${h.y}"/>`,
         `<circle data-role="rotate" data-tip="Drag to rotate · Shift snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="4"/>`)
       it.notches.forEach((n, i) => {
@@ -124,8 +129,8 @@ export class View2D {
     if (this.last) this.render(...this.last)
   }
 
-  private handle(it: Item, clearance: number) {
-    return place([{ x: 0, y: -(itemSize(it)[1] / 2 + (it.clearance ?? clearance) + HANDLE) }], it)[0]
+  private handle(it: Item, fit: number) {
+    return place([{ x: 0, y: -(itemSize(it)[1] / 2 + (it.fit ?? fit) + HANDLE) }], it)[0]
   }
 
   private point(e: MouseEvent) {

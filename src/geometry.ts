@@ -1,4 +1,4 @@
-import { areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
+import { areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, unionD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
 import { itemHeight, perimeterPoint, type CaseDims, type Item, type Material, type Project } from './model'
 
 const TOL = 0.02 // max chord deviation of arcs in mm
@@ -40,8 +40,8 @@ export function place(path: PathD, it: Item): PathD {
 
 /** Cutouts of an item (incl. notches) for the foam slab starting at depth a (from the foam top), with the item's top
  * at depth `z` (see resting). Every slab from the foam top down to the item's bottom is cut, so it can be lifted out. */
-export function itemCuts(it: Item, a: number, globalClearance: number, z = it.z): PathsD {
-  const c = it.clearance ?? globalClearance
+export function itemCuts(it: Item, a: number, globalFit: number, z = it.z): PathsD {
+  const c = it.fit ?? globalFit
   const out: PathsD = []
   if (a < z + itemHeight(it) - EPS) {
     let shape: PathD | null
@@ -99,7 +99,7 @@ export const offset = (paths: PathsD, delta: number) => inflatePathsD(paths, del
 /**
  * Where an item really sits: its cut ends on a layer boundary, so it sinks onto the layer below its cut.
  * Returns its top depth (from the foam top) and the index of the layer it rests on (-1 = the case floor).
- * Items reaching below the stack keep their z.
+ * Items reaching below the stack stand on the case floor.
  */
 export function resting(p: Project, it: Item): { z: number; layer: number } {
   const h = itemHeight(it)
@@ -109,7 +109,7 @@ export function resting(p: Project, it: Item): { z: number; layer: number } {
     b += thickness[i]
     if (b >= it.z + h - EPS) return { z: b - h, layer: i + 1 < thickness.length ? i + 1 : -1 }
   }
-  return { z: it.z, layer: -1 }
+  return { z: b - h, layer: -1 }
 }
 
 export interface Layer {
@@ -119,7 +119,13 @@ export interface Layer {
   b: number
   tree: PolyTreeD
   paths: PathsD
+  /** Outlines of the objects themselves (no fit, no notches). */
+  outlines: PathsD
 }
+
+/** The object's own outline in a slab (or its footprint for a = -Infinity), without fit and notches. */
+export const objectOutline = (it: Item, a: number, z = it.z) =>
+  unionD(itemCuts({ ...it, fit: 0, notches: [] }, a, 0, z), FillRule.NonZero)
 
 /** Foam slabs top → bottom; a and b are measured from the foam top, the stack rests on the case floor. */
 function slabs(p: Project) {
@@ -139,26 +145,27 @@ export function computeLayers(p: Project): Layer[] {
   return slabs(p).map(({ material, a, b, outline }, index) => {
     const tree = new PolyTreeD()
     if (outline) {
-      const cuts = p.items.flatMap(it => itemCuts(it, a, p.box.clearance, resting(p, it).z))
+      const cuts = p.items.flatMap(it => itemCuts(it, a, p.box.fit, resting(p, it).z))
       booleanOpDWithPolyTree(ClipType.Difference, [outline], cuts, tree, FillRule.NonZero, 3)
     }
-    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree) }
+    const outlines = unionD(p.items.flatMap(it => objectOutline(it, a, resting(p, it).z)), FillRule.NonZero)
+    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines }
   })
 }
 
 export const AREA_TOL = 0.01 // mm², ignores rounding slivers
 
 /**
- * How badly items break the safe zone, summed over all layers (mm²): the area of their cuts outside the wall's safe line
- * plus the area of other items' cuts inside their own safe zone. 0 = clear. `only` limits the work to one item.
+ * How badly items break the min. wall, summed over all layers (mm²): the area of their cuts closer than it to the case
+ * plus the area of other items' cuts closer than it to them. 0 = clear. `only` limits the work to one item.
  */
-export function safeZoneViolations(p: Project, only?: Item): Map<string, number> {
-  const s = Math.max(p.box.safeZone, 0)
+export function wallViolations(p: Project, only?: Item): Map<string, number> {
+  const s = Math.max(p.box.minWall, 0)
   const result = new Map<string, number>()
   const area = (paths: PathsD) => Math.abs(areaPathsD(paths))
   const zs = p.items.map(it => resting(p, it).z)
   for (const { a, outline } of slabs(p)) {
-    const cuts = p.items.map((it, i) => itemCuts(it, a, p.box.clearance, zs[i]))
+    const cuts = p.items.map((it, i) => itemCuts(it, a, p.box.fit, zs[i]))
     const inner = outline ? (s ? offset([outline], -s) : [outline]) : []
     p.items.forEach((it, i) => {
       if (!cuts[i].length || (only && it !== only)) return
@@ -173,9 +180,9 @@ export function safeZoneViolations(p: Project, only?: Item): Map<string, number>
   return result
 }
 
-/** Ids of items whose cuts leave the case or come closer than the safe zone to another item's cuts or the wall, in any layer. */
-export const safeZoneConflicts = (p: Project) =>
-  new Set([...safeZoneViolations(p)].filter(([, v]) => v > AREA_TOL).map(([id]) => id))
+/** Ids of items whose cuts leave the case or come closer than the min. wall to another item's cuts or the case, in any layer. */
+export const wallConflicts = (p: Project) =>
+  new Set([...wallViolations(p)].filter(([, v]) => v > AREA_TOL).map(([id]) => id))
 
 export const pathData = (paths: PathsD, dx = 0, dy = 0) =>
   paths.map(p => 'M' + p.map(q => `${(q.x + dx).toFixed(2)} ${(q.y + dy).toFixed(2)}`).join('L') + 'Z').join('')

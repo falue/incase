@@ -1,6 +1,6 @@
 import './style.css'
 import type { ArrangeResult } from './arrange'
-import { AREA_TOL, computeLayers, safeZoneConflicts, safeZoneViolations, stackTotal } from './geometry'
+import { AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal } from './geometry'
 import { exportSvg } from './export'
 import { History } from './history'
 import { defaultItem, itemHeight, loadProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type Dim, type Item, type Project, type Shape } from './model'
@@ -13,10 +13,11 @@ type Layout = 'top' | 'split' | '3d'
 const SHAPES: Record<Shape, string> = { box: 'Box', cylinder: 'Cylinder', lying: 'Lying cylinder', sphere: 'Sphere' }
 const SHAPE_KEYS: Record<string, Shape> = { b: 'box', c: 'cylinder', l: 'lying', s: 'sphere' }
 const LAYOUT_KEYS: Record<string, Layout> = { 1: 'top', 2: 'split', 3: '3d' }
+/** Sizes in panel order, ending with the one that sets how deep the object sinks; corner R goes after rotation. */
 const DIMS: Record<Shape, [string, Dim, string][]> = {
   box: [
-    ['Length', 'l', "Size along the object's own X axis (before rotation)"],
     ['Width', 'w', "Size along the object's own Y axis (before rotation)"],
+    ['Length', 'l', "Size along the object's own X axis (before rotation)"],
     ['Depth', 'h', 'Height of the box, i.e. how deep it sinks into the foam'],
     ['Corner R', 'r', 'Corner radius of the box seen from above'],
   ],
@@ -25,8 +26,8 @@ const DIMS: Record<Shape, [string, Dim, string][]> = {
     ['Depth', 'h', 'Height of the cylinder, i.e. how deep it sinks into the foam'],
   ],
   lying: [
-    ['Diameter', 'd', 'Diameter of the lying cylinder; also how deep it sinks into the foam'],
     ['Length', 'l', ''],
+    ['Diameter', 'd', 'Diameter of the lying cylinder; also how deep it sinks into the foam'],
   ],
   sphere: [['Diameter', 'd', 'Diameter of the sphere; the cut stays full width above its centre so it can be lifted out']],
 }
@@ -216,10 +217,11 @@ function renderCase() {
     prop('Bottom L', size(() => b.bottomL, v => (b.bottomL = v)), 'Inner length at the floor; smaller than the top for tapered walls'),
     prop('Bottom W', size(() => b.bottomW, v => (b.bottomW = v)), 'Inner width at the floor; smaller than the top for tapered walls'),
     prop('Depth', size(() => b.depth, v => (b.depth = v)), 'Inner depth of the case; the foam stack rests on its floor'),
-    prop('Clearance', len(() => b.clearance, v => (b.clearance = v)), 'Gap between objects and foam: + = loose, − = tight grip. Objects can override it'),
+    prop('Fit', len(() => b.fit, v => (b.fit = v)), 'How much bigger (+, loose) or smaller (−, tight grip) the cutouts are than the objects. Objects can override it'),
     prop('Edge R', size(() => b.radius, v => (b.radius = v)), 'Corner radius of the case seen from above'),
     prop('Bottom R', size(() => b.bottomRadius, v => (b.bottomRadius = v)), 'Radius where the floor meets the walls; makes the lowest layers smaller'),
-    prop('Safe zone', size(() => b.safeZone, v => (b.safeZone = v)), 'Minimum foam left between any two cutouts and between cutouts and the case wall', 'wide'),
+    prop('Min. wall', size(() => b.minWall, v => (b.minWall = v)), 'Minimum material wall thickness: the least foam left between any two cutouts and between a cutout and the case wall'),
+    prop('Lid depth', size(() => b.lidDepth, v => (b.lidDepth = v)), 'Inner depth of the lid; case depth + lid depth is the tallest anything may reach'),
   )
 }
 
@@ -314,7 +316,7 @@ function select(id: string | null) {
 }
 
 // sizes of the last edited object; new objects start with them
-const INHERITED = ['l', 'w', 'h', 'd', 'r', 'clearance', 'notchD', 'notchDepth', 'notchR'] as const
+const INHERITED = ['l', 'w', 'h', 'd', 'r', 'fit', 'notchD', 'notchDepth', 'notchR'] as const
 let template: Partial<Item> = {}
 const remember = (it: Item) => (template = Object.fromEntries(INHERITED.map(k => [k, it[k]])))
 
@@ -355,8 +357,8 @@ function stopArranging() {
 }
 $('busy-abort').onclick = stopArranging
 
-/** Safe-zone violation of one item for the "keep clear" option (0 = clear). */
-const violation = (it: Item) => safeZoneViolations(project, it).get(it.id) ?? 0
+/** Min. wall violation of one item for the "keep clear" option (0 = clear). */
+const violation = (it: Item) => wallViolations(project, it).get(it.id) ?? 0
 
 function restore(state: string | null) {
   if (state === null) return
@@ -381,26 +383,29 @@ function renderSelection() {
     it.shape = shape.value as Shape
     changed('items', 'selection')
   }
-  const clearance = input('number', () => (it.clearance === null ? '' : fmtLen(it.clearance)), el => {
-    if (el.value === '') it.clearance = null
-    else if (Number.isFinite(el.valueAsNumber)) it.clearance = inches ? el.valueAsNumber * MM_PER_IN : el.valueAsNumber
+  const fit = input('number', () => (it.fit === null ? '' : fmtLen(it.fit)), el => {
+    if (el.value === '') it.fit = null
+    else if (Number.isFinite(el.valueAsNumber)) it.fit = inches ? el.valueAsNumber * MM_PER_IN : el.valueAsNumber
     else return
     remember(it)
     changed()
   })
-  clearance.placeholder = `global ${fmtLen(project.box.clearance)}`
-  clearance.dataset.scrub = inches ? '0.02' : '0.5'
+  fit.placeholder = `global ${fmtLen(project.box.fit)}`
+  fit.dataset.scrub = inches ? '0.02' : '0.5'
+  const dims = DIMS[it.shape]
+  const dimProp = ([label, k, tip]: [string, Dim, string]) => prop(label, size(() => it[k], v => ((it[k] = v), remember(it))), tip)
 
   $('selection').replaceChildren(
     h('div', { className: 'props' },
       prop('Name', text(() => it.name, v => (it.name = v), 'items'), '', 'wide'),
       prop('Shape', shape, 'Shape of the object; sizes are kept when switching', 'wide'),
+      ...dims.filter(([, k]) => k !== 'r').map(dimProp),
+      prop('Z from top', len(() => it.z, v => (it.z = v)), "How far below the foam top the object's top sits; the cut stays open above it"),
       prop('X', len(() => it.x, v => (it.x = v)), "Position of the object's centre, right of the case centre"),
       prop('Y', len(() => it.y, v => (it.y = v)), "Position of the object's centre, below the case centre (top view)"),
       prop('Rotation °', num(() => it.rot, v => (it.rot = v)), 'Rotation in the top view, clockwise'),
-      prop('Z from top', len(() => it.z, v => (it.z = v)), "How far below the foam top the object's top sits; the cut stays open above it"),
-      ...DIMS[it.shape].map(([label, k, tip]) => prop(label, size(() => it[k], v => ((it[k] = v), remember(it))), tip)),
-      prop('Clearance', clearance, 'Overrides the global clearance for this object; leave empty to use the global one'),
+      ...dims.filter(([, k]) => k === 'r').map(dimProp),
+      prop('Fit', fit, 'Overrides the global fit for this object (+ loose, − tight grip); leave empty to use the global one'),
     ),
     h('div', { className: 'row' },
       h('h4', { className: 'grow', textContent: 'Finger notches', tip: 'Round cutouts on the edge so you can grab the object' }),
@@ -417,6 +422,15 @@ function renderSelection() {
   )
 }
 
+const LID_MARGIN = 2 // mm; closer than this to the closed lid counts as touching
+
+/** Warning if the item's top reaches the closed lid (case depth + lid depth above the floor), or comes very close. */
+function lidWarning(it: Item) {
+  const room = project.box.depth - stackTotal(project) + resting(project, it).z + project.box.lidDepth // from its top to the lid
+  if (room < 0) return `${it.name} is ${fmtLen(-room)} ${unit()} too tall for case + lid`
+  return room < LID_MARGIN && `${it.name} almost touches the lid (${fmtLen(room)} ${unit()} left)`
+}
+
 function renderWarnings(conflicts: Set<string>) {
   const total = stackTotal(project)
   const diff = total - project.box.depth
@@ -424,7 +438,8 @@ function renderWarnings(conflicts: Set<string>) {
   const warnings = [
     Math.abs(diff) > 0.01 && `Stack is ${fmtLen(Math.abs(diff))} ${unit()} ${diff < 0 ? 'lower' : 'taller'} than the case depth`,
     ...project.items.map(it => it.z + itemHeight(it) > total + 0.01 && `${it.name} reaches below the stack`),
-    ...project.items.map(it => conflicts.has(it.id) && `${it.name} is inside the safe zone`),
+    ...project.items.map(lidWarning),
+    ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
     colors.includes(project.labelColor.toLowerCase()) && 'Label colour equals a material colour',
     new Set(colors).size < colors.length && 'Two materials share a line colour',
   ].filter((w): w is string => !!w)
@@ -625,7 +640,7 @@ $('toolbar').replaceChildren(
   duplicateTool,
   deleteTool,
   tool('even', 'Arrange evenly: largest equal gaps, centred (A)', () => arrange(true)),
-  tool('pack', 'Pack tightly at the safe zone, centred (⇧A)', () => arrange(false)),
+  tool('pack', 'Pack tightly at the min. wall, centred (⇧A)', () => arrange(false)),
   h('hr'),
   undoTool,
   redoTool,
@@ -648,7 +663,7 @@ function scheduleViews() {
   frame ||= requestAnimationFrame(() => {
     frame = 0
     const layers = computeLayers(project)
-    const conflicts = safeZoneConflicts(project)
+    const conflicts = wallConflicts(project)
     renderWarnings(conflicts)
     layerIndex = Math.max(0, Math.min(layerIndex, layers.length - 1))
     const layer = layers[layerIndex]

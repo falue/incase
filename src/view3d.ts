@@ -14,6 +14,9 @@ const CASE_LINE = 2.5 // px
 const FAR = 1e5 // mm, stands in for an open section side
 const FIT_MARGIN = 1.1
 const HIGHLIGHT = '#3d8bff' // current layer
+const SHELL = '#7f8fa3' // case and lid
+const OBJECT = '#ff9a3c'
+const LID_HIT = '#ff2a2a' // part of an object above the closed lid
 
 function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
   for (let i = 0; i < node.count; i++) {
@@ -29,7 +32,7 @@ function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
 }
 
 /** `bottom` is the three y the item stands on. */
-function ghost(it: Item, bottom: number, selected: boolean): THREE.Mesh {
+function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Plane[]): THREE.Mesh {
   const r = it.d / 2
   const geo =
     it.shape === 'box' ? new THREE.BoxGeometry(it.l, it.h, it.w)
@@ -38,7 +41,7 @@ function ghost(it: Item, bottom: number, selected: boolean): THREE.Mesh {
     : new THREE.SphereGeometry(r, 48, 24)
   // the polygon offset keeps its bottom face in front of the foam top it stands on (no z-fighting)
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
-    color: selected ? '#3d8bff' : '#ff9a3c', transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide,
+    color, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide, clippingPlanes,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
   }))
   mesh.position.set(it.x, bottom + itemHeight(it) / 2, it.y)
@@ -47,16 +50,10 @@ function ghost(it: Item, bottom: number, selected: boolean): THREE.Mesh {
   return mesh
 }
 
-/** Translucent cavity walls + floor, lofted through rings that follow the taper and the bottom edge radius. */
-function caseShell(box: CaseDims): THREE.Object3D[] {
-  const R = Math.min(box.bottomRadius, box.depth)
-  const depths = R > 0 ? [0, ...Array.from({ length: 7 }, (_, i) => box.depth - R + (R * i) / 6)] : [0, box.depth]
-  const rings = depths.map(z => {
-    const s = caseSection(box, z)
-    return roundedRect(Math.max(s.l, 0.01), Math.max(s.w, 0.01), s.r, PER_CORNER)!.map(p => new THREE.Vector3(p.x, -z, p.y))
-  })
+/** Translucent walls lofted through `rings` (equal point counts, from roundedRect with PER_CORNER), closed by a flat cap
+ * at the last ring, with lines along the first and last ring and where the corner arcs start and end. */
+function shell(rings: THREE.Vector3[][], opacity: number, lineWidth: number): THREE.Object3D[] {
   const n = rings[0].length
-
   const walls = new THREE.BufferGeometry().setFromPoints(rings.flat())
   const index: number[] = []
   for (let k = 0; k < rings.length - 1; k++) {
@@ -66,27 +63,42 @@ function caseShell(box: CaseDims): THREE.Object3D[] {
     }
   }
   walls.setIndex(index)
-  const floor = new THREE.ShapeGeometry(new THREE.Shape(rings.at(-1)!.map(p => new THREE.Vector2(p.x, p.z))))
-  floor.rotateX(Math.PI / 2).translate(0, -box.depth, 0)
+  const last = rings.at(-1)!
+  const cap = new THREE.ShapeGeometry(new THREE.Shape(last.map(p => new THREE.Vector2(p.x, p.z))))
+  cap.rotateX(Math.PI / 2).translate(0, last[0].y, 0)
 
-  // top and floor rings plus the vertical lines where the corner arcs start and end
   const lines: THREE.Vector3[] = []
-  for (const ring of [rings[0], rings.at(-1)!]) ring.forEach((p, i) => lines.push(p, ring[(i + 1) % n]))
+  for (const ring of [rings[0], last]) ring.forEach((p, i) => lines.push(p, ring[(i + 1) % n]))
   for (let c = 0; c < 4; c++) {
     for (const i of [c * (PER_CORNER + 1), c * (PER_CORNER + 1) + PER_CORNER]) {
       for (let k = 0; k < rings.length - 1; k++) lines.push(rings[k][i], rings[k + 1][i])
     }
   }
 
-  const surface = () => new THREE.MeshBasicMaterial({ color: '#7f8fa3', transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false })
+  const surface = () => new THREE.MeshBasicMaterial({ color: SHELL, transparent: true, opacity, side: THREE.DoubleSide, depthWrite: false })
   return [
     new THREE.Mesh(walls, surface()),
-    new THREE.Mesh(floor, surface()),
-    new LineSegments2(
-      new LineSegmentsGeometry().setPositions(lines.flatMap(p => p.toArray())),
-      new LineMaterial({ color: '#7f8fa3', linewidth: CASE_LINE }),
-    ),
+    new THREE.Mesh(cap, surface()),
+    new LineSegments2(new LineSegmentsGeometry().setPositions(lines.flatMap(p => p.toArray())), new LineMaterial({ color: SHELL, linewidth: lineWidth })),
   ]
+}
+
+/** Case cavity: rings follow the taper and the bottom edge radius down to the floor. */
+function caseShell(box: CaseDims) {
+  const R = Math.min(box.bottomRadius, box.depth)
+  const depths = R > 0 ? [0, ...Array.from({ length: 7 }, (_, i) => box.depth - R + (R * i) / 6)] : [0, box.depth]
+  const rings = depths.map(z => {
+    const s = caseSection(box, z)
+    return roundedRect(Math.max(s.l, 0.01), Math.max(s.w, 0.01), s.r, PER_CORNER)!.map(p => new THREE.Vector3(p.x, -z, p.y))
+  })
+  return shell(rings, 0.12, CASE_LINE)
+}
+
+/** Closed lid above the rim: straight walls up to the lid depth, fainter than the case. */
+function lidShell(box: CaseDims) {
+  const s = caseSection(box, 0)
+  const ring = (y: number) => roundedRect(Math.max(s.l, 0.01), Math.max(s.w, 0.01), s.r, PER_CORNER)!.map(p => new THREE.Vector3(p.x, y, p.y))
+  return shell([ring(0), ring(box.lidDepth)], 0.05, CASE_LINE / 2)
 }
 
 export class View3D {
@@ -233,14 +245,22 @@ export class View3D {
         new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: highlight ? HIGHLIGHT : '#222' })),
       )
     }
-    this.ghosts = p.items.map(it => {
+    this.ghosts = p.items.flatMap(it => {
       // the item stands on (and explodes with) the layer below its cut, or on the case floor
       const { z, layer } = resting(p, it)
-      const bottom = layer >= 0 ? -(foamTop + layers[layer].a) + shift(layer) : -(foamTop + z + itemHeight(it))
-      return ghost(it, bottom, it.id === selectedId)
+      const h = itemHeight(it)
+      const bottom = layer >= 0 ? -(foamTop + layers[layer].a) + shift(layer) : -(foamTop + z + h)
+      const color = it.id === selectedId ? HIGHLIGHT : OBJECT
+      const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
+      if (excess <= 0) return [ghost(it, bottom, color, planes)]
+      // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
+      const lid = bottom + h - excess
+      return [
+        ghost(it, bottom, color, [...planes, new THREE.Plane(new THREE.Vector3(0, -1, 0), lid)]),
+        ghost(it, bottom, LID_HIT, [...planes, new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)]),
+      ]
     })
-    const shell = caseShell(p.box)
-    for (const o of this.ghosts) (o.material as THREE.Material).clippingPlanes = planes
+    const shell = [...caseShell(p.box), ...(p.box.lidDepth > 0 ? lidShell(p.box) : [])]
     this.content.add(...this.ghosts, ...shell)
 
     if (!this.box) {
@@ -256,7 +276,7 @@ export class View3D {
     if (!this.box) return
     const b = this.box
     const L = Math.max(b.topL, b.bottomL), W = Math.max(b.topW, b.bottomW)
-    const target = new THREE.Vector3(0, -b.depth / 2, 0)
+    const target = new THREE.Vector3(0, (b.lidDepth - b.depth) / 2, 0) // middle of case + lid
     // seen from the front-right corner: 45° around the vertical axis, ~40° above the horizon
     const dir = new THREE.Vector3(1.1 * Math.SQRT1_2, 0.9, 1.1 * Math.SQRT1_2).normalize()
     const o = this.orthographic
@@ -265,7 +285,7 @@ export class View3D {
     o.updateMatrixWorld()
     // half extents of the case box as seen from the camera
     let halfW = 0, halfH = 0
-    for (const x of [-L / 2, L / 2]) for (const y of [0, -b.depth]) for (const z of [-W / 2, W / 2]) {
+    for (const x of [-L / 2, L / 2]) for (const y of [b.lidDepth, -b.depth]) for (const z of [-W / 2, W / 2]) {
       const v = new THREE.Vector3(x, y, z).applyMatrix4(o.matrixWorldInverse)
       halfW = Math.max(halfW, Math.abs(v.x))
       halfH = Math.max(halfH, Math.abs(v.y))

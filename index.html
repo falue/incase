@@ -24,7 +24,7 @@
         <div id="view2d" class="view"></div>
         <div class="overlay top-left"><span class="tag">Top</span>
           <label class="check" data-tip="Snap positions to a 5 mm (⅛ in) grid and rotation to 15°; arrow keys move one step"><input type="checkbox" id="snap" /> Snap</label>
-          <label class="check" data-tip="Moves that would push an object out of the case or deeper into a safe zone are refused"><input type="checkbox" id="constrain" /> Keep clear</label>
+          <label class="check" data-tip="Moves that would push an object out of the case or closer than the min. wall are refused"><input type="checkbox" id="constrain" /> Keep clear</label>
           <!-- the label changes width, so it comes last and nothing else moves -->
           <span class="stepper" data-tip="Layer whose cut lines are shown; the layers above and below appear faint">
             <button id="layer-up" class="icon" data-tip="Layer above (PageUp)">▲</button><button id="layer-down" class="icon" data-tip="Layer below (PageDown)">▼</button><span id="layer-label"></span>

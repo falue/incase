@@ -18,7 +18,7 @@ export interface Item extends Record<Dim, number> {
   y: number
   rot: number
   z: number
-  clearance: number | null
+  fit: number | null
   notches: Notch[]
   /** Diameter and depth (from the foam top) of all notches. */
   notchD: number
@@ -35,9 +35,11 @@ export interface CaseDims {
   depth: number
   radius: number
   bottomRadius: number
-  clearance: number
-  /** Minimum foam between any two cuts and between cuts and the case wall. */
-  safeZone: number
+  fit: number
+  /** Minimum material wall thickness: least foam between any two cuts and between cuts and the case wall. */
+  minWall: number
+  /** Inner depth of the lid; case depth + lid depth is the tallest anything may reach. */
+  lidDepth: number
 }
 
 export interface Project {
@@ -58,7 +60,7 @@ export const uid = () => crypto.randomUUID()
 
 export const itemHeight = (it: Item) => (it.shape === 'box' || it.shape === 'cylinder' ? it.h : it.d)
 
-/** Footprint extent [x, y] in the item's local frame, without clearance. */
+/** Footprint extent [x, y] in the item's local frame, before the fit is applied. */
 export function itemSize(it: Item): [number, number] {
   if (it.shape === 'box') return [it.l, it.w]
   if (it.shape === 'lying') return [it.l, it.d]
@@ -69,7 +71,7 @@ export function itemSize(it: Item): [number, number] {
 export function defaultItem(shape: Shape, name: string, offset: number, notchDepth: number): Item {
   return {
     id: uid(), name, shape, x: offset, y: offset, rot: 0, z: 0,
-    l: 100, w: 60, h: 40, d: 60, r: 5, clearance: null, notches: [], notchD: 25, notchDepth, notchR: 3,
+    l: 100, w: 60, h: 40, d: 60, r: 5, fit: null, notches: [], notchD: 25, notchDepth, notchR: 3,
   }
 }
 
@@ -154,7 +156,7 @@ function defaultProject(): Project {
   const camera = { ...defaultItem('box', 'Camera', 0, materials.find(m => m.id === stack[0])!.thickness), l: 130, w: 80, h: 60, r: 8 }
   setNotchCount(camera, 1)
   return {
-    box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, clearance: 1, safeZone: 5 },
+    box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, fit: 1, minWall: 5, lidDepth: 20 },
     materials,
     stack,
     stackAuto: true,
@@ -167,9 +169,12 @@ function defaultProject(): Project {
 /** Parses a saved project, filling fields added in later versions. */
 export function parseProject(json: string): Project {
   const p: Project = JSON.parse(json)
-  p.box.safeZone ??= 5
+  p.box.minWall ??= (p.box as { safeZone?: number }).safeZone ?? 5 // was called safeZone
+  p.box.lidDepth ??= 20
+  p.box.fit ??= (p.box as { clearance?: number }).clearance ?? 1 // was called clearance
   p.kerf ??= 0
   for (const it of p.items) {
+    if (it.fit === undefined) it.fit = (it as { clearance?: number | null }).clearance ?? null
     it.notchR ??= 3
     // notches used to carry their own offset, diameter and depth
     const old = it.notches as unknown as { dx: number; dy: number; d: number; depth: number; auto?: boolean }[]

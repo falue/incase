@@ -1,5 +1,5 @@
 import { areaPathsD, differenceD, FillRule, getBoundsPathsD, minkowskiSumD, simplifyPathsD, unionD, type PathsD } from 'clipper2-ts'
-import { caseOutline, itemCuts, offset, safeZoneConflicts, stackTotal } from './geometry'
+import { caseOutline, itemCuts, offset, wallConflicts, stackTotal } from './geometry'
 import type { Item, Project } from './model'
 
 // notches make any shape asymmetric; otherwise boxes repeat after 180°, round shapes never change
@@ -21,7 +21,7 @@ type Bounds = { left: number; top: number; right: number; bottom: number }
 function pack(p: Project, outline: PathsD, gap: number, tolerance: number) {
   const bin = simplifyPathsD(offset(outline, -gap), tolerance)
   const footprint = (it: Item, rot: number) =>
-    simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0, rot }, -Infinity, p.box.clearance), FillRule.NonZero), tolerance)
+    simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0, rot }, -Infinity, p.box.fit), FillRule.NonZero), tolerance)
   // area swept by the mirrored part along the edges of `paths`: reference positions where the part touches them.
   // minkowskiSumD only sweeps the part's outline, so filled copies at every vertex close the gaps inside it.
   const sweep = (part: PathsD, paths: PathsD) => {
@@ -94,7 +94,7 @@ function outlineDistance(a: PathsD, b: PathsD, dx: number, dy: number) {
 function spread(p: Project, outline: PathsD) {
   const parts = p.items.map(it => ({
     it,
-    shape: simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0 }, -Infinity, p.box.clearance), FillRule.NonZero), SPREAD.simplify),
+    shape: simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0 }, -Infinity, p.box.fit), FillRule.NonZero), SPREAD.simplify),
   }))
   const room = (i: number, x: number, y: number) =>
     parts.reduce((c, o, j) => (j === i ? c : Math.min(c, outlineDistance(parts[i].shape, o.shape, o.it.x - x, o.it.y - y))),
@@ -119,23 +119,23 @@ function spread(p: Project, outline: PathsD) {
 }
 
 /**
- * Arranges all items inside the case: packed tightly at the safe zone and centred, or (`even`) packed and then
+ * Arranges all items inside the case: packed tightly at the min. wall and centred, or (`even`) packed and then
  * spread so the space between items and to the case is about equal.
  * Items that do not fit stay where they are; returns how many that were.
  */
 export function autoArrange(p: Project, even: boolean): number {
-  const s = Math.max(p.box.safeZone, 0)
+  const s = Math.max(p.box.minWall, 0)
   const outline = caseOutline(p.box, p.box.depth - stackTotal(p), p.box.depth) // narrowest section of the stack
   if (!outline) return p.items.length
   const result = pack(p, [outline], s + MARGIN, SIMPLIFY)
   for (const [it, at] of result.placements) Object.assign(it, at)
   if (result.failed) return result.failed
 
-  // centre the group in the case; keep it uncentred if that would break a safe zone
+  // centre the group in the case; keep it uncentred if that would break the min. wall
   const b = getBoundsPathsD([outline]), g = result.box
   const dx = (b.left + b.right - g.left - g.right) / 2, dy = (b.top + b.bottom - g.top - g.bottom) / 2
   for (const it of p.items) Object.assign(it, { x: it.x + dx, y: it.y + dy })
-  if (safeZoneConflicts(p).size) for (const it of p.items) Object.assign(it, { x: it.x - dx, y: it.y - dy })
+  if (wallConflicts(p).size) for (const it of p.items) Object.assign(it, { x: it.x - dx, y: it.y - dy })
 
   if (even) spread(p, [outline])
   return 0
