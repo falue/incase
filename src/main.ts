@@ -333,29 +333,40 @@ function duplicate(it: Item) {
   select(copy.id)
 }
 
-// runs in a worker while an overlay locks the UI; aborting discards the result
+// runs in a worker while a dialog locks the UI; aborting discards the result, objects that did not fit are reported in the same dialog
 let arranging: Worker | null = null
+
+/** Shows the locking dialog: a spinner with Abort while working, or an error with OK. */
+function showDialog(text: string, error: boolean) {
+  $('busy-text').textContent = text
+  $('busy').firstElementChild!.classList.toggle('error', error)
+  const button = $('busy-abort')
+  button.textContent = error ? 'OK' : 'Abort'
+  if (error) delete button.dataset.tip
+  else button.dataset.tip = 'Stop and keep the old arrangement (Esc)'
+  $('busy').hidden = false
+}
 
 function arrange(even: boolean) {
   if (arranging) return
   const worker = (arranging = new Worker(new URL('./arrange.worker.ts', import.meta.url), { type: 'module' }))
-  $('busy-text').textContent = even ? 'Arranging evenly…' : 'Packing tightly…'
-  $('busy').hidden = false
+  showDialog(even ? 'Arranging evenly…' : 'Packing tightly…', false)
   worker.onmessage = (e: MessageEvent<ArrangeResult>) => {
-    stopArranging()
-    for (const { id, ...at } of e.data.placements) Object.assign(project.items.find(it => it.id === id)!, at)
+    const { failed, placements } = e.data
+    closeDialog()
+    for (const { id, ...at } of placements) Object.assign(project.items.find(it => it.id === id)!, at)
     changed()
-    if (e.data.failed) $('hint').textContent = `${e.data.failed} object(s) did not fit and were left in place`
+    if (failed) showDialog(`${failed} of ${project.items.length} objects don't fit into the case with a min. wall of ${fmtLen(project.box.minWall)} ${unit()}; they were left where they were.`, true)
   }
   worker.postMessage({ project, even })
 }
 
-function stopArranging() {
+function closeDialog() {
   arranging?.terminate()
   arranging = null
   $('busy').hidden = true
 }
-$('busy-abort').onclick = stopArranging
+$('busy-abort').onclick = closeDialog
 
 /** Min. wall violation of one item for the "keep clear" option (0 = clear). */
 const violation = (it: Item) => wallViolations(project, it).get(it.id) ?? 0
@@ -684,8 +695,8 @@ function renderAll() {
 }
 
 addEventListener('keydown', e => {
-  if (arranging) {
-    if (e.key === 'Escape') stopArranging()
+  if (!$('busy').hidden) {
+    if (e.key === 'Escape' || e.key === 'Enter') closeDialog()
     return e.preventDefault()
   }
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
