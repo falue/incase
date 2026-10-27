@@ -383,7 +383,7 @@ $('theme').onclick = () => {
 
 // --- viewports ---
 
-const view2d = new View2D($('view2d'), select, () => changed())
+const view2d = new View2D($('view2d'), select, () => changed(), mm => `${fmtLen(mm)} ${unit()}`)
 const view3d = new View3D($('view3d'), select)
 applyTheme(pref('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))
 
@@ -424,6 +424,7 @@ explode.ondblclick = () => {
   setExplode()
 }
 
+const sectionResets: (() => void)[] = []
 for (const axis of ['x', 'y'] as const) {
   const slider = $(`section-${axis}`)
   const [from, to] = slider.querySelectorAll('input')
@@ -434,12 +435,15 @@ for (const axis of ['x', 'y'] as const) {
   }
   from.oninput = () => update(from)
   to.oninput = () => update(to)
-  slider.ondblclick = () => {
+  const reset = () => {
     from.value = '0'
     to.value = '1000'
     update()
   }
+  slider.ondblclick = reset
+  sectionResets.push(reset)
 }
+$('section-reset').onclick = () => sectionResets.forEach(reset => reset())
 
 view3d.setOrthographic(pref('camera') !== 'persp')
 segmented($('camera'), [['ortho', 'Ortho'], ['persp', 'Persp']], () => (view3d.isOrthographic ? 'ortho' : 'persp'), v => {

@@ -184,3 +184,6 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 #view2d .name { font-size: 6px; text-anchor: middle; dominant-baseline: middle; fill: var(--ink); pointer-events: none; }
 #view2d .handle-line { stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
 #view2d .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
+#view2d .hit { fill: none; stroke: transparent; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
+
+.tooltip { position: absolute; z-index: 2; max-width: 360px; padding: 4px 8px; border-radius: 5px; background: var(--panel); border: 1px solid var(--line); color: var(--text); pointer-events: none; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); }

@@ -3,7 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
-import type { PolyPathD } from 'clipper2-ts'
+import { booleanOpDWithPolyTree, ClipType, FillRule, PolyTreeD, type PolyPathD } from 'clipper2-ts'
 import { caseSection, roundedRect, stackTotal, type Layer } from './geometry'
 import { itemHeight, type CaseDims, type Item, type Project } from './model'
 
@@ -11,6 +11,7 @@ import { itemHeight, type CaseDims, type Item, type Project } from './model'
 
 const PER_CORNER = 8 // arc segments per corner of the case shell
 const CASE_LINE = 2.5 // px
+const FAR = 1e5 // mm, stands in for an open section side
 
 function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
   for (let i = 0; i < node.count; i++) {
@@ -98,9 +99,11 @@ export class View3D {
   private extent = { x: 0, y: 0 } // half case size per plan axis
   private ghosts: THREE.Mesh[] = []
   private box: CaseDims | null = null
+  private last: Parameters<View3D['update']> | null = null
 
   constructor(private host: HTMLElement, onSelect: (id: string | null) => void) {
     this.renderer.setPixelRatio(devicePixelRatio)
+    this.renderer.localClippingEnabled = true
     const canvas = this.renderer.domElement
     host.append(canvas)
     // a click without dragging selects the object under the pointer
@@ -147,19 +150,16 @@ export class View3D {
 
   setSection(axis: 'x' | 'y', from: number, to: number) {
     this.sections[axis] = [from, to]
-    this.applySections()
-    this.draw()
+    if (this.last) this.update(...this.last)
   }
 
-  /** Clipping planes for the section ranges; plan y is three z. Ranges at the slider ends add no plane. */
-  private applySections() {
-    const planes: THREE.Plane[] = []
-    for (const [axis, normal] of [['x', new THREE.Vector3(1, 0, 0)], ['y', new THREE.Vector3(0, 0, 1)]] as const) {
+  /** Section bounds in plan mm per axis; ±Infinity where the slider sits at its end. */
+  private sectionBounds() {
+    const range = (axis: 'x' | 'y') => {
       const [from, to] = this.sections[axis], e = this.extent[axis]
-      if (from > 0) planes.push(new THREE.Plane(normal.clone(), -(2 * from - 1) * e))
-      if (to < 1) planes.push(new THREE.Plane(normal.clone().negate(), (2 * to - 1) * e))
+      return [from > 0 ? (2 * from - 1) * e : -Infinity, to < 1 ? (2 * to - 1) * e : Infinity]
     }
-    this.renderer.clippingPlanes = planes
+    return { x: range('x'), y: range('y') }
   }
 
   setBackground(color: string) {
@@ -188,6 +188,17 @@ export class View3D {
   }
 
   update(p: Project, layers: Layer[], selectedId: string | null) {
+    this.last = [p, layers, selectedId]
+    this.extent = { x: Math.max(p.box.topL, p.box.bottomL) / 2, y: Math.max(p.box.topW, p.box.bottomW) / 2 }
+    const { x: [x0, x1], y: [y0, y1] } = this.sectionBounds()
+    const sectioned = [x0, x1, y0, y1].some(Number.isFinite)
+    // foam is cut as real geometry so its section faces are solid; objects use clipping planes (plan y is three z), the case stays whole
+    const clamp = (v: number) => Math.max(-FAR, Math.min(FAR, v))
+    const rect = [{ x: clamp(x0), y: clamp(y0) }, { x: clamp(x1), y: clamp(y0) }, { x: clamp(x1), y: clamp(y1) }, { x: clamp(x0), y: clamp(y1) }]
+    const cut = (v: number, normal: THREE.Vector3Tuple, point: THREE.Vector3Tuple) =>
+      Number.isFinite(v) ? [new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...normal), new THREE.Vector3(...point))] : []
+    const planes = [...cut(x0, [1, 0, 0], [x0, 0, 0]), ...cut(x1, [-1, 0, 0], [x1, 0, 0]), ...cut(y0, [0, 0, 1], [0, 0, y0]), ...cut(y1, [0, 0, -1], [0, 0, y1])]
+
     this.content.traverse(o => {
       if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
         o.geometry.dispose()
@@ -199,13 +210,18 @@ export class View3D {
     const foamTop = p.box.depth - stackTotal(p)
     const shift = (i: number) => (layers.length - 1 - i) * this.explode
     for (const layer of layers) {
+      let tree = layer.tree
+      if (sectioned) {
+        tree = new PolyTreeD()
+        booleanOpDWithPolyTree(ClipType.Intersection, layer.paths, [rect], tree, FillRule.EvenOdd, 3)
+      }
       const shapes: THREE.Shape[] = []
-      collectShapes(layer.tree, shapes)
+      collectShapes(tree, shapes)
       const geo = new THREE.ExtrudeGeometry(shapes, { depth: layer.b - layer.a, bevelEnabled: false })
       geo.rotateX(Math.PI / 2).translate(0, -(foamTop + layer.a) + shift(layer.index), 0)
       const color = new THREE.Color(layer.material.color).lerp(new THREE.Color('#fff'), 0.35)
       this.content.add(
-        new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9, side: THREE.DoubleSide })),
+        new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9 })),
         new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: '#222' })),
       )
     }
@@ -214,10 +230,9 @@ export class View3D {
       const i = layers.findIndex(l => it.z < l.b)
       return ghost(it, -foamTop + (layers.length ? shift(i < 0 ? layers.length - 1 : i) : 0), it.id === selectedId)
     })
-    if (this.ghosts.length) this.content.add(...this.ghosts)
-    this.content.add(...caseShell(p.box))
-    this.extent = { x: Math.max(p.box.topL, p.box.bottomL) / 2, y: Math.max(p.box.topW, p.box.bottomW) / 2 }
-    this.applySections()
+    const shell = caseShell(p.box)
+    for (const o of this.ghosts) (o.material as THREE.Material).clippingPlanes = planes
+    this.content.add(...this.ghosts, ...shell)
 
     if (!this.box) {
       this.box = p.box
