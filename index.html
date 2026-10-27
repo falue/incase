@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>incase</title>
+  </head>
+  <body>
+    <aside id="sidebar">
+      <h1>incase <button id="theme" title="Toggle dark / light mode">◐</button></h1>
+      <ul id="warnings"></ul>
+      <section><h2>Case (inner)</h2><div id="case" class="grid"></div></section>
+      <section><h2>Materials <small>order = preference</small></h2><div id="materials"></div></section>
+      <section><h2>Stack <small>top → bottom</small></h2><div id="stack"></div></section>
+      <section><h2>Objects</h2><div id="items"></div></section>
+      <section id="selection-section"><h2>Selected object</h2><div id="selection"></div></section>
+      <section><h2>Export</h2><div id="export"></div></section>
+    </aside>
+    <main>
+      <div class="pane">
+        <header>
+          Top view
+          <select id="layer-select"></select>
+          <span class="hint">drag = move · handle = rotate (Shift snaps 15°) · arrows nudge · Del · ⌘/Ctrl+D</span>
+        </header>
+        <div id="view2d" class="view"></div>
+      </div>
+      <div class="pane">
+        <header>3D preview <label class="hint">explode <input id="explode" type="range" min="0" max="40" value="0" /></label></header>
+        <div id="view3d" class="view"></div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

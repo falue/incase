@@ -1,0 +1,128 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #fff;
+  --line: #d8dce2;
+  --text: #1d2228;
+  --muted: #6b7480;
+  --accent: #2b6fd6;
+  --warn: #c0392b;
+  --input: #fff;
+  --btn: #f1f3f6;
+  --btn-hover: #e4e8ee;
+  --selected: #eaf1fc;
+  --canvas: #fff;
+  --gridline: #eef0f3;
+  --ink: #333;
+  --ink-muted: #999;
+  --view3d: #e9ecf0;
+  color-scheme: light;
+  font: 13px/1.4 system-ui, sans-serif;
+  color: var(--text);
+}
+
+:root[data-theme='dark'] {
+  --bg: #16191d;
+  --panel: #1f2328;
+  --line: #353b43;
+  --text: #e3e6ea;
+  --muted: #8d96a1;
+  --accent: #4d8ef0;
+  --warn: #ff6b5b;
+  --input: #15181c;
+  --btn: #2a2f36;
+  --btn-hover: #353b43;
+  --selected: #23344f;
+  --canvas: #24282e;
+  --gridline: #2e333a;
+  --ink: #d0d4d9;
+  --ink-muted: #7a838d;
+  --view3d: #2a2e34;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  background: var(--bg);
+}
+
+#sidebar {
+  overflow-y: auto;
+  padding: 12px 14px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+h1 { display: flex; justify-content: space-between; align-items: center; margin: 0 0 8px; font-size: 18px; }
+h2 { margin: 0 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; }
+h2 small, .hint { font-weight: normal; text-transform: none; letter-spacing: 0; color: var(--muted); font-size: 12px; }
+h3 { margin: 10px 0 4px; font-size: 12px; }
+section { padding: 10px 0; border-top: 1px solid var(--line); }
+
+#warnings { margin: 0 0 8px; padding-left: 18px; color: var(--warn); }
+#warnings:empty { display: none; }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.field span { color: var(--muted); font-size: 11px; }
+.row { display: flex; align-items: center; gap: 4px; margin: 4px 0; flex-wrap: wrap; }
+.row .field { flex: 1; }
+
+input, select, button { font: inherit; }
+input[type='number'], input[type='text'], select {
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--input);
+  color: inherit;
+}
+.row > input[type='text'] { flex: 1; }
+.row > input[type='number'] { width: 64px; }
+.row > select { flex: 1; }
+input[type='color'] { width: 28px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; }
+
+button {
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--btn);
+  color: inherit;
+  cursor: pointer;
+}
+button:hover { background: var(--btn-hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.swatch { width: 12px; height: 12px; border-radius: 2px; flex: none; }
+.idx { width: 16px; text-align: right; color: var(--muted); }
+.total.off { color: var(--warn); font-weight: 600; }
+
+button.item { display: block; width: 100%; margin: 3px 0; text-align: left; background: var(--input); }
+button.item.selected { border-color: var(--accent); background: var(--selected); }
+
+main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+.pane header { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--line); background: var(--panel); flex-wrap: wrap; }
+.view { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.view > svg, .view > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+#view2d svg { background: var(--canvas); user-select: none; touch-action: none; }
+#view2d .gridline { fill: none; stroke: var(--gridline); stroke-width: 0.3; }
+#view2d .case { fill: none; stroke: var(--ink); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+#view2d .case-bottom { fill: none; stroke: var(--ink-muted); stroke-width: 1px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+#view2d .item { fill: rgba(255, 154, 60, 0.35); stroke: #d9741c; stroke-width: 1px; vector-effect: non-scaling-stroke; cursor: move; }
+#view2d .item.selected { fill: rgba(43, 111, 214, 0.3); stroke: var(--accent); stroke-width: 2px; }
+#view2d .layer { fill: none; stroke-width: 1.5px; vector-effect: non-scaling-stroke; pointer-events: none; }
+#view2d .name { font-size: 6px; text-anchor: middle; dominant-baseline: middle; fill: var(--ink); pointer-events: none; }
+#view2d .handle-line { stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
+#view2d .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
