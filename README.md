@@ -70,8 +70,6 @@ Drag the label of any number field to scrub its value (⇧ for fine steps).
 - SVG upload of object outlines
 - Photo tracing (Gemini with your own API key, kept in your browser only; a reference square in the photo
   for scale), then enter the object's height, width and depth
-- Nesting of the cut pieces onto material sheets, e.g. [SVGnest](https://github.com/Jack000/SVGnest)
-- Other ideas from shadow-board tools as inspiration, not as requirement
 
 ## Built with
 
