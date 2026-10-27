@@ -2,8 +2,9 @@ import { areaPathsD, differenceD, FillRule, getBoundsPathsD, minkowskiSumD, simp
 import { caseOutline, itemCuts, offset, wallConflicts, stackTotal } from './geometry'
 import type { Item, Project } from './model'
 
-// notches make any shape asymmetric; otherwise boxes repeat after 180°, round shapes never change
-const rotations = (it: Item) => (it.notches.length ? [0, 90, 180, 270] : it.shape === 'box' || it.shape === 'lying' ? [0, 90] : [it.rot])
+// notches and polygons are asymmetric; boxes repeat after 180°, round shapes never change
+const rotations = (it: Item) =>
+  it.notches.length || it.shape === 'polygon' ? [0, 90, 180, 270] : it.shape === 'box' || it.shape === 'lying' ? [0, 90] : [it.rot]
 const SIMPLIFY = 0.3 // mm; keeps the search fast, covered by MARGIN
 const MARGIN = 0.5 // mm added to every gap
 const SPREAD = { simplify: 0.5, maxStep: 16, minStep: 0.25, passes: 10 } // mm; even spreading
@@ -21,7 +22,7 @@ type Bounds = { left: number; top: number; right: number; bottom: number }
 function pack(p: Project, outline: PathsD, gap: number, tolerance: number) {
   const bin = simplifyPathsD(offset(outline, -gap), tolerance)
   const footprint = (it: Item, rot: number) =>
-    simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0, rot }, -Infinity, p.box.fit), FillRule.NonZero), tolerance)
+    simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0, rot }, -Infinity), FillRule.NonZero), tolerance)
   // area swept by the mirrored part along the edges of `paths`: reference positions where the part touches them.
   // minkowskiSumD only sweeps the part's outline, so filled copies at every vertex close the gaps inside it.
   const sweep = (part: PathsD, paths: PathsD) => {
@@ -94,7 +95,7 @@ function outlineDistance(a: PathsD, b: PathsD, dx: number, dy: number) {
 function spread(p: Project, outline: PathsD) {
   const parts = p.items.map(it => ({
     it,
-    shape: simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0 }, -Infinity, p.box.fit), FillRule.NonZero), SPREAD.simplify),
+    shape: simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0 }, -Infinity), FillRule.NonZero), SPREAD.simplify),
   }))
   const room = (i: number, x: number, y: number) =>
     parts.reduce((c, o, j) => (j === i ? c : Math.min(c, outlineDistance(parts[i].shape, o.shape, o.it.x - x, o.it.y - y))),

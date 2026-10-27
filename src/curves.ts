@@ -36,22 +36,26 @@ function fit(pts: PointD[], i: number, j: number): Circle | null {
 const num = (v: number) => String(Math.round(v * 1000) / 1000)
 const pt = (p: PointD) => `${num(p.x)} ${num(p.y)}`
 
-/** SVG arc commands along circle `c` from pts[i] to pts[j]. */
-function arc(pts: PointD[], i: number, j: number, c: Circle): string {
-  let span = 0 // signed; positive = clockwise on screen (y points down) = SVG sweep flag 1
+/** A contour piece to `to`: a straight line, or an arc around a circle with signed `span`
+ * (radians; positive = clockwise on screen, where y points down). */
+export type Segment = { to: PointD; arc?: Circle & { span: number } }
+/** Closed contour of lines and arcs. */
+export interface Contour { start: PointD; segments: Segment[] }
+
+/** Arc segments along circle `c` from pts[i] to pts[j]; split in two if longer than MAX_SPAN. */
+function arc(pts: PointD[], i: number, j: number, c: Circle): Segment[] {
+  let span = 0
   for (let k = i; k < j; k++) {
     const a0 = Math.atan2(pts[k].y - c.y, pts[k].x - c.x), a1 = Math.atan2(pts[k + 1].y - c.y, pts[k + 1].x - c.x)
     span += Math.atan2(Math.sin(a1 - a0), Math.cos(a1 - a0))
   }
-  if (Math.abs(span) > MAX_SPAN) {
-    const m = (i + j) >> 1
-    return arc(pts, i, m, c) + arc(pts, m, j, c)
-  }
-  return `A${num(c.r)} ${num(c.r)} 0 ${Math.abs(span) > Math.PI ? 1 : 0} ${span > 0 ? 1 : 0} ${pt(pts[j])}`
+  if (Math.abs(span) <= MAX_SPAN) return [{ to: pts[j], arc: { ...c, span } }]
+  const m = (i + j) >> 1
+  return [...arc(pts, i, m, c), ...arc(pts, m, j, c)]
 }
 
-/** Closed SVG path data with lines and circular arcs, moved by (dx, dy). */
-export function curveData(paths: PathsD, dx = 0, dy = 0): string {
+/** Turns polygons back into lines and circular arcs, moved by (dx, dy). */
+export function contours(paths: PathsD, dx = 0, dy = 0): Contour[] {
   return paths.map(raw => {
     const path = raw.filter((p, k) => {
       const prev = raw[(k + raw.length - 1) % raw.length]
@@ -61,7 +65,7 @@ export function curveData(paths: PathsD, dx = 0, dy = 0): string {
     const n = path.length, at = (k: number) => path[(k + n) % n]
     const start = Math.max(0, path.findIndex((_, k) => !fit([at(k - 1), at(k), at(k + 1)], 0, 2)))
     const pts = [...path.slice(start), ...path.slice(0, start + 1)].map(p => ({ x: p.x + dx, y: p.y + dy }))
-    let d = `M${pt(pts[0])}`
+    const segments: Segment[] = []
     for (let i = 0; i < pts.length - 1;) {
       // grow an arc from i as far as the points stay on one circle (at least two segments)
       let j = i, c: Circle | null = null
@@ -72,10 +76,16 @@ export function curveData(paths: PathsD, dx = 0, dy = 0): string {
         c = next
       }
       if (c) {
-        d += arc(pts, i, j, c)
+        segments.push(...arc(pts, i, j, c))
         i = j
-      } else d += `L${pt(pts[++i])}`
+      } else segments.push({ to: pts[++i] })
     }
-    return d + 'Z'
-  }).join('')
+    return { start: pts[0], segments }
+  })
 }
+
+/** SVG path data for contours. */
+export const svgPath = (cs: Contour[]) =>
+  cs.map(c => `M${pt(c.start)}` + c.segments.map(({ to, arc }) =>
+    arc ? `A${num(arc.r)} ${num(arc.r)} 0 ${Math.abs(arc.span) > Math.PI ? 1 : 0} ${arc.span > 0 ? 1 : 0} ${pt(to)}` : `L${pt(to)}`,
+  ).join('') + 'Z').join('')

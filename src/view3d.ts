@@ -4,7 +4,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import { booleanOpDWithPolyTree, ClipType, FillRule, PolyTreeD, type PolyPathD } from 'clipper2-ts'
-import { caseSection, resting, roundedRect, stackTotal, type Layer } from './geometry'
+import { caseSection, objectOutline, resting, roundedRect, stackTotal, type Layer } from './geometry'
 import { itemHeight, type CaseDims, type Item, type Project } from './model'
 
 // Plan (x, y) maps to three (x, z); y = 0 is the case top, the case floor is at y = -depth.
@@ -31,6 +31,14 @@ function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
   }
 }
 
+/** Polygon item extruded to its depth, centred vertically like the other primitives. */
+function polygonGeometry(it: Item) {
+  const outline = objectOutline({ ...it, x: 0, y: 0, rot: 0 }, -Infinity)
+  return new THREE.ExtrudeGeometry(outline.map(p => new THREE.Shape(p.map(q => new THREE.Vector2(q.x, q.y)))), { depth: it.h, bevelEnabled: false })
+    .rotateX(Math.PI / 2)
+    .translate(0, it.h / 2, 0)
+}
+
 /** `bottom` is the three y the item stands on. */
 function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Plane[]): THREE.Mesh {
   const r = it.d / 2
@@ -38,6 +46,7 @@ function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Pl
     it.shape === 'box' ? new THREE.BoxGeometry(it.l, it.h, it.w)
     : it.shape === 'cylinder' ? new THREE.CylinderGeometry(r, r, it.h, 48)
     : it.shape === 'lying' ? new THREE.CylinderGeometry(r, r, it.l, 48).rotateZ(Math.PI / 2)
+    : it.shape === 'polygon' ? polygonGeometry(it)
     : new THREE.SphereGeometry(r, 48, 24)
   // the polygon offset keeps its bottom face in front of the foam top it stands on (no z-fighting)
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({

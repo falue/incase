@@ -1,16 +1,18 @@
 import './style.css'
 import type { ArrangeResult } from './arrange'
 import { AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal } from './geometry'
-import { exportSvg } from './export'
+import { exportDxf, exportSvg } from './export'
 import { History } from './history'
-import { defaultItem, itemHeight, loadProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type Dim, type Item, type Project, type Shape } from './model'
+import { exportPdf, PAPERS } from './pdf'
+import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
+import { boxCorners, defaultItem, itemHeight, loadProject, newProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type CaseKey, type Dim, type Item, type Project, type Shape } from './model'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
 
-type Section = 'materials' | 'items' | 'selection'
+type Section = 'case' | 'materials' | 'items' | 'selection'
 type Layout = 'top' | 'split' | '3d'
 
-const SHAPES: Record<Shape, string> = { box: 'Box', cylinder: 'Cylinder', lying: 'Lying cylinder', sphere: 'Sphere' }
+const SHAPES: Record<Shape, string> = { box: 'Box', cylinder: 'Cylinder', lying: 'Lying cylinder', sphere: 'Sphere', polygon: 'Polygon' }
 const SHAPE_KEYS: Record<string, Shape> = { b: 'box', c: 'cylinder', l: 'lying', s: 'sphere' }
 const LAYOUT_KEYS: Record<string, Layout> = { 1: 'top', 2: 'split', 3: '3d' }
 /** Sizes in panel order, ending with the one that sets how deep the object sinks; corner R goes after rotation. */
@@ -30,6 +32,10 @@ const DIMS: Record<Shape, [string, Dim, string][]> = {
     ['Diameter', 'd', 'Diameter of the lying cylinder; also how deep it sinks into the foam'],
   ],
   sphere: [['Diameter', 'd', 'Diameter of the sphere; the cut stays full width above its centre so it can be lifted out']],
+  polygon: [
+    ['Depth', 'h', 'How deep the object sinks into the foam'],
+    ['Corner R', 'r', 'Rounds every corner of the polygon'],
+  ],
 }
 const PALETTE = ['#000000', '#ff0000', '#0000ff', '#00a000', '#ff8000', '#00a0a0', '#a000a0', '#808000']
 const ICONS = {
@@ -40,6 +46,7 @@ const ICONS = {
   duplicate: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
   delete: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
   fit: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
+  polygon: '<path d="M4 18l3-12 9-2 4 9-7 7z"/>',
   even: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/>',
   pack: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="5" rx="1"/><rect x="13" y="10" width="8" height="11" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
@@ -47,6 +54,7 @@ const ICONS = {
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
 const MM_PER_IN = 25.4
+const CASE_KEYS: CaseKey[] = ['topL', 'topW', 'bottomL', 'bottomW', 'depth', 'lidDepth', 'radius', 'bottomRadius']
 
 // per-viewer UI preferences
 const pref = (key: string) => localStorage.getItem(`incase.${key}`)
@@ -183,13 +191,13 @@ function segmented<T extends string>(host: HTMLElement, options: [T, string, str
 }
 
 function syncInputs() {
-  for (const el of document.querySelectorAll<HTMLInputElement>('aside input')) {
+  for (const el of document.querySelectorAll<HTMLInputElement>('input')) {
     const get = getters.get(el)
     if (get && el !== document.activeElement) el.value = get()
   }
 }
 
-const renderers: Record<Section, () => void> = { materials: renderMaterials, items: renderItems, selection: renderSelection }
+const renderers: Record<Section, () => void> = { case: renderCase, materials: renderMaterials, items: renderItems, selection: renderSelection }
 
 /** Call after every model change; rebuilds the listed panels (structural changes), the rest is synced in place. */
 function changed(...rebuild: Section[]) {
@@ -205,24 +213,106 @@ function changed(...rebuild: Section[]) {
 
 function renderCase() {
   const b = project.box
+  /** Case size field; a red dot marks values the chosen preset had no data for, until they are edited. */
+  const field = (label: string, key: CaseKey, tip: string, set: (v: number) => void = v => (b[key] = v)) => {
+    const unknown = b.unknown.includes(key)
+    const assumed = key === 'bottomL' || key === 'bottomW'
+    const note = assumed ? 'No data for this preset: assumed equal to the top' : 'No data for this preset: set to 0'
+    const el = prop(label, size(() => b[key], v => {
+      set(v)
+      b.unknown = b.unknown.filter(k => k !== key)
+      el.classList.remove('unknown')
+      el.dataset.tip = tip
+    }), unknown ? `${note} · ${tip}` : tip)
+    el.classList.toggle('unknown', unknown)
+    return el
+  }
   // bottom size follows the top while both are equal (straight walls)
-  const linked = (top: 'topL' | 'topW', bottom: 'bottomL' | 'bottomW') =>
-    size(() => b[top], v => {
-      if (b[bottom] === b[top]) b[bottom] = v
-      b[top] = v
-    })
+  const linked = (top: 'topL' | 'topW', bottom: 'bottomL' | 'bottomW') => (v: number) => {
+    if (b[bottom] === b[top]) b[bottom] = v
+    b[top] = v
+  }
   $('case').replaceChildren(
-    prop('Top L', linked('topL', 'bottomL'), 'Inner length of the case at the top opening (the bottom follows while both are equal)'),
-    prop('Top W', linked('topW', 'bottomW'), 'Inner width of the case at the top opening (the bottom follows while both are equal)'),
-    prop('Bottom L', size(() => b.bottomL, v => (b.bottomL = v)), 'Inner length at the floor; smaller than the top for tapered walls'),
-    prop('Bottom W', size(() => b.bottomW, v => (b.bottomW = v)), 'Inner width at the floor; smaller than the top for tapered walls'),
-    prop('Depth', size(() => b.depth, v => (b.depth = v)), 'Inner depth of the case; the foam stack rests on its floor'),
-    prop('Fit', len(() => b.fit, v => (b.fit = v)), 'How much bigger (+, loose) or smaller (−, tight grip) the cutouts are than the objects. Objects can override it'),
-    prop('Edge R', size(() => b.radius, v => (b.radius = v)), 'Corner radius of the case seen from above'),
-    prop('Bottom R', size(() => b.bottomRadius, v => (b.bottomRadius = v)), 'Radius where the floor meets the walls; makes the lowest layers smaller'),
+    field('Top L', 'topL', 'Inner length of the case at the top opening (the bottom follows while both are equal)', linked('topL', 'bottomL')),
+    field('Top W', 'topW', 'Inner width of the case at the top opening (the bottom follows while both are equal)', linked('topW', 'bottomW')),
+    field('Bottom L', 'bottomL', 'Inner length at the floor; smaller than the top for tapered walls'),
+    field('Bottom W', 'bottomW', 'Inner width at the floor; smaller than the top for tapered walls'),
+    field('Depth', 'depth', 'Inner depth of the case; the foam stack rests on its floor'),
+    field('Edge R', 'radius', 'Corner radius of the case seen from above'),
+    field('Bottom R', 'bottomRadius', 'Radius where the floor meets the walls; makes the lowest layers smaller'),
     prop('Min. wall', size(() => b.minWall, v => (b.minWall = v)), 'Minimum material wall thickness: the least foam left between any two cutouts and between a cutout and the case wall'),
-    prop('Lid depth', size(() => b.lidDepth, v => (b.lidDepth = v)), 'Inner depth of the lid; case depth + lid depth is the tallest anything may reach'),
+    field('Lid depth', 'lidDepth', 'Inner depth of the lid; case depth + lid depth is the tallest anything may reach'),
+    ...(isBorrowed('preset-picker') ? [] : [$('preset-picker')]),
   )
+}
+
+/** Search field for case presets: type part of a name, Enter or click applies it (undoable). */
+function presetPicker() {
+  const search = h('input', { type: 'text', className: 'grow', placeholder: 'Preset, e.g. Peli 1500 or Euro pallet' })
+  withTip(search, 'Fills in the case from a preset. Peli is a trademark of Pelican Products, Inc.; not affiliated')
+  const list = h('div', { className: 'preset-list', hidden: true })
+  let matches: Preset[] = []
+  let active = 0
+
+  const apply = (p: Preset) => {
+    Object.assign(project.box, p.values)
+    project.box.unknown = [...p.unknown]
+    search.value = ''
+    search.blur()
+    changed('case')
+  }
+  const show = () => {
+    const words = search.value.toLowerCase().split(/\s+/).filter(Boolean)
+    matches = [...userPresets(), ...PRESETS].filter(p => words.every(w => `${p.name} ${p.group}`.toLowerCase().includes(w)))
+    active = Math.min(active, Math.max(0, matches.length - 1))
+    list.hidden = !matches.length
+    list.replaceChildren(...matches.map((p, i) => {
+      const row = h('div', { className: 'preset' + (i === active ? ' active' : '') },
+        h('span', { className: 'grow', textContent: p.name }),
+        h('span', { className: 'hint', textContent: p.user ? 'yours' : p.group }))
+      row.onmousedown = e => {
+        e.preventDefault() // keep focus until applied
+        if ((e.target as Element).closest('.remove')) return
+        apply(p)
+      }
+      if (p.user) {
+        row.append(Object.assign(h('button', { className: 'icon remove', textContent: '✕', tip: 'Delete this preset' }), {
+          onmousedown: (e: MouseEvent) => {
+            e.preventDefault()
+            saveUserPresets(userPresets().filter(u => u.name !== p.name))
+            show()
+          },
+        }))
+      }
+      return row
+    }))
+    list.children[active]?.scrollIntoView({ block: 'nearest' })
+  }
+  search.onfocus = show
+  search.oninput = () => ((active = 0), show())
+  search.onblur = () => ($('presets').hidden = true)
+  search.onkeydown = e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      active = (active + (e.key === 'ArrowDown' ? 1 : -1) + matches.length) % Math.max(1, matches.length)
+      show()
+    } else if (e.key === 'Enter' && matches[active]) apply(matches[active])
+    else if (e.key === 'Escape') search.blur()
+    else return
+    e.preventDefault()
+  }
+  const save = button('＋', 'Save the current case as your own preset (in this browser)', () => {
+    const name = prompt('Name of the preset', search.value || 'My case')?.trim()
+    if (!name) return
+    const values = Object.fromEntries(CASE_KEYS.map(k => [k, project.box[k]])) as Record<CaseKey, number>
+    saveUserPresets([...userPresets().filter(u => u.name !== name), { name, group: 'yours', values, unknown: [...project.box.unknown], user: true }])
+  })
+  save.className = 'icon'
+  save.onmousedown = e => e.preventDefault() // keep the field focused so the popup stays open
+  $('presets').replaceChildren(h('div', { className: 'row' }, search, save), list)
+  $('presets-button').onclick = () => {
+    $('presets').hidden = false
+    search.focus()
+  }
 }
 
 function renderMaterials() {
@@ -243,12 +333,22 @@ function renderMaterials() {
     ),
     h('div', { className: 'row' },
       button('+ Material', '', () => ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor() }), 'materials'),
-      h('span', { className: 'grow' }),
-      withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Colour of the layer labels in the export; must differ from all material colours'),
-      h('span', { className: 'hint', textContent: 'Label colour' }),
     ),
+  )
+}
+
+/** Export settings and buttons. */
+function renderExport() {
+  $('export').replaceChildren(
     h('div', { className: 'props' },
-      prop('Laser kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the laser cut; exported pieces grow by half of it so they come out at nominal size', 'wide')),
+      prop('Label colour', color(() => project.labelColor, v => (project.labelColor = v)), 'Layer labels and object outlines in the exports; must differ from all material colours'),
+      prop('Laser kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the laser cut; exported pieces grow by half of it so they come out at nominal size'),
+    ),
+    h('div', { className: 'row' },
+      h('button', { className: 'primary', textContent: 'SVG', tip: 'All layers side by side as one SVG in mm, ready for the laser', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project)), 'image/svg+xml') }),
+      h('button', { textContent: 'DXF', tip: 'Same as the SVG, as a DXF (R12, mm) with one layer per material', onclick: () => download('incase.dxf', exportDxf(project, computeLayers(project)), 'application/dxf') }),
+      h('button', { textContent: 'PDF', tip: 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', onclick: pdfDialog }),
+    ),
   )
 }
 
@@ -286,7 +386,11 @@ function renderStack() {
   })
   $('stack').replaceChildren(
     h('div', { className: 'row' },
-      h('span', { className: 'total' + (Math.abs(z - box.depth) > 0.01 ? ' off' : ''), textContent: `${fmtLen(z)} / ${fmtLen(box.depth)} ${unit()}`, tip: 'Stack height / case depth' }),
+      h('span', {
+        className: 'total' + (z > box.depth + 0.01 ? ' off' : ''),
+        textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
+        tip: 'A stack lower than the case is fine (it rests on the floor); a taller one does not fit',
+      }),
       h('span', { className: 'grow' }),
       project.stackAuto
         ? h('span', { className: 'hint', textContent: 'auto-filled', tip: 'The stack refills itself from the material list until you edit it' })
@@ -320,9 +424,31 @@ const INHERITED = ['l', 'w', 'h', 'd', 'r', 'fit', 'notchD', 'notchDepth', 'notc
 let template: Partial<Item> = {}
 const remember = (it: Item) => (template = Object.fromEntries(INHERITED.map(k => [k, it[k]])))
 
-function addItem(shape: Shape) {
+/** New item with the sizes of the last edited one, added to the project. */
+function createItem(shape: Shape) {
   const top = project.materials.find(m => m.id === project.stack[0])
   const it = { ...defaultItem(shape, `${SHAPES[shape]} ${project.items.length + 1}`, (project.items.length % 8) * 10, top?.thickness ?? 30), ...template }
+  project.items.push(it)
+  return it
+}
+
+function addItem(shape: Shape) {
+  select(createItem(shape).id)
+}
+
+function startPolygon() {
+  select(null)
+  view2d.startDrawing()
+  updateChrome()
+}
+
+/** Turns drawn corner points (plan coordinates) into a polygon object centred on their bounding box. */
+function createPolygon(points: { x: number; y: number }[]) {
+  const xs = points.map(p => p.x), ys = points.map(p => p.y)
+  const x = (Math.min(...xs) + Math.max(...xs)) / 2, y = (Math.min(...ys) + Math.max(...ys)) / 2
+  const top = project.materials.find(m => m.id === project.stack[0])
+  const it = { ...defaultItem('polygon', `Polygon ${project.items.length + 1}`, 0, top?.thickness ?? 30), ...template, x, y, r: 0 }
+  it.pts = points.map(p => ({ x: p.x - x, y: p.y - y }))
   project.items.push(it)
   select(it.id)
 }
@@ -333,40 +459,202 @@ function duplicate(it: Item) {
   select(copy.id)
 }
 
-// runs in a worker while a dialog locks the UI; aborting discards the result, objects that did not fit are reported in the same dialog
-let arranging: Worker | null = null
+// --- dialog: locks the UI; Esc closes it ---
 
-/** Shows the locking dialog: a spinner with Abort while working, or an error with OK. */
-function showDialog(text: string, error: boolean) {
-  $('busy-text').textContent = text
-  $('busy').firstElementChild!.classList.toggle('error', error)
-  const button = $('busy-abort')
-  button.textContent = error ? 'OK' : 'Abort'
-  if (error) delete button.dataset.tip
-  else button.dataset.tip = 'Stop and keep the old arrangement (Esc)'
-  $('busy').hidden = false
-}
-
-function arrange(even: boolean) {
-  if (arranging) return
-  const worker = (arranging = new Worker(new URL('./arrange.worker.ts', import.meta.url), { type: 'module' }))
-  showDialog(even ? 'Arranging evenly…' : 'Packing tightly…', false)
-  worker.onmessage = (e: MessageEvent<ArrangeResult>) => {
-    const { failed, placements } = e.data
-    closeDialog()
-    for (const { id, ...at } of placements) Object.assign(project.items.find(it => it.id === id)!, at)
-    changed()
-    if (failed) showDialog(`${failed} of ${project.items.length} objects don't fit into the case with a min. wall of ${fmtLen(project.box.minWall)} ${unit()}; they were left where they were.`, true)
-  }
-  worker.postMessage({ project, even })
+/** Opens the dialog with the given content and focuses its first button (so Enter presses it). */
+function openDialog(...children: (Node | string)[]) {
+  const box = $('dialog-box')
+  box.replaceChildren(...children)
+  $('dialog').hidden = false
+  box.querySelector<HTMLElement>('button.primary')?.focus() // Enter presses the main button, if there is one
 }
 
 function closeDialog() {
   arranging?.terminate()
   arranging = null
-  $('busy').hidden = true
+  giveBack()
+  $('dialog').hidden = true
 }
-$('busy-abort').onclick = closeDialog
+
+// panels the guided setup shows inside the dialog; they go back to their place when it closes
+let borrowed: [Element, ParentNode, Node | null][] = []
+
+function borrow(...ids: string[]) {
+  return ids.map(id => {
+    const el = $(id)
+    borrowed.push([el, el.parentNode!, el.nextSibling])
+    return el
+  })
+}
+
+function giveBack() {
+  // the old neighbour may be gone if the panel was re-rendered meanwhile
+  for (const [el, parent, next] of borrowed.reverse()) parent.insertBefore(el, next?.parentNode === parent ? next : null)
+  borrowed = []
+}
+
+const isBorrowed = (id: string) => borrowed.some(([el]) => el.id === id)
+
+const SETUP_STEPS = ['Case', 'Materials & stack', 'Objects']
+
+/** Starts a new project and walks through case, materials and objects, then arranges evenly. */
+function guidedSetup() {
+  project = newProject()
+  selectedId = null
+  renderAll()
+  const step = (i: number) => {
+    giveBack()
+    const content =
+      i === 0 ? [hint('Measure the inside of your case or pick a preset; everything else starts with defaults.'), caseQuick()]
+      : i === 1 ? [hint('The foam sheets you have; the stack fills the case depth on its own.'), ...borrow('materials', 'stack')]
+      : [hint('One line per object: name, type and size. Position and rotation are left to auto-arrange.'), objectTable()]
+    const next = i < 2
+      ? h('button', { className: 'primary', textContent: 'Next', onclick: () => step(i + 1) })
+      : h('button', { className: 'primary', textContent: 'Done', tip: 'Close and arrange the objects evenly', onclick: () => {
+          closeDialog()
+          if (project.items.length) arrange(true)
+        } })
+    openDialog(h('div', { className: 'dialog-form wizard' },
+      h('h3', { textContent: `Step ${i + 1} of ${SETUP_STEPS.length} · ${SETUP_STEPS[i]}` }),
+      ...content,
+      h('div', { className: 'row' }, i ? h('button', { textContent: 'Back', onclick: () => step(i - 1) }) : '', h('span', { className: 'grow' }), next),
+    ))
+  }
+  step(0)
+}
+
+const hint = (text: string) => h('p', { className: 'hint', textContent: text })
+
+/** Guided setup, step 1: only the inner size, depth and lid (straight walls), plus the presets. */
+function caseQuick() {
+  const b = project.box
+  const straight = (top: 'topL' | 'topW', bottom: 'bottomL' | 'bottomW') => (v: number) => {
+    b[top] = b[bottom] = v
+    b.unknown = b.unknown.filter(k => k !== top && k !== bottom)
+  }
+  return h('div', { className: 'props' },
+    prop('Length', size(() => b.topL, straight('topL', 'bottomL')), 'Inner length of the case'),
+    prop('Width', size(() => b.topW, straight('topW', 'bottomW')), 'Inner width of the case'),
+    prop('Depth', size(() => b.depth, v => (b.depth = v)), 'Inner depth of the case base'),
+    prop('Lid depth', size(() => b.lidDepth, v => (b.lidDepth = v)), 'Inner depth of the lid'),
+    ...borrow('preset-picker'),
+  )
+}
+
+/** Size each quick-entry column sets per shape ('' = not used): L / Ø, W, H. */
+const QUICK_COLUMNS: Record<Shape, (Dim | '')[]> = {
+  box: ['l', 'w', 'h'], cylinder: ['d', '', 'h'], lying: ['l', '', 'd'], sphere: ['d', '', ''], polygon: ['', '', 'h'],
+}
+
+/** Quick entry of objects: one row each (name, type, sizes); a new empty row appears once the last one is used. */
+function objectTable() {
+  const table = h('div', { className: 'object-table' },
+    ...['Name', 'Type', 'L / Ø', 'W', 'H', ''].map(textContent => h('span', { className: 'hint', textContent })))
+  const toMm = (v: number) => (inches ? v * MM_PER_IN : v)
+
+  const row = (existing?: Item) => {
+    let it = existing
+    const type = h('select', {}, ...Object.values(SHAPE_KEYS).map(shape => h('option', { value: shape, textContent: SHAPES[shape] })))
+    type.value = it?.shape ?? 'box'
+    // the empty last row becomes an object as soon as something is entered
+    const use = () => {
+      if (!it) {
+        it = createItem(type.value as Shape)
+        if (!name.value) name.value = it.name
+        remove.hidden = false
+        table.append(row())
+      }
+      return it
+    }
+    const name = h('input', { type: 'text', value: it?.name ?? '', placeholder: 'Name' })
+    name.oninput = () => {
+      use().name = name.value
+      changed('items')
+    }
+    const sizes = QUICK_COLUMNS.box.map((_, col) => {
+      const el = h('input', { type: 'number', step: 'any', min: '0' })
+      el.oninput = () => {
+        const key = QUICK_COLUMNS[type.value as Shape][col]
+        if (!key || !Number.isFinite(el.valueAsNumber)) return
+        const item = use()
+        item[key] = toMm(Math.max(0, el.valueAsNumber))
+        remember(item)
+        changed()
+      }
+      return el
+    })
+    const showSizes = () => QUICK_COLUMNS[type.value as Shape].forEach((key, col) => {
+      sizes[col].disabled = !key
+      sizes[col].value = key && it ? fmtLen(it[key]) : ''
+    })
+    type.onchange = () => {
+      if (it) it.shape = type.value as Shape
+      showSizes()
+      changed('items')
+    }
+    const remove = h('button', { className: 'icon', textContent: '✕', hidden: !it, onclick: () => {
+      project.items = project.items.filter(o => o !== it)
+      line.remove()
+      changed('items', 'selection')
+    } })
+    showSizes()
+    const line = h('div', { className: 'object-row' }, name, type, ...sizes, remove)
+    return line
+  }
+
+  table.append(...project.items.map(row), row())
+  return table
+}
+
+const errorDialog = (text: string) =>
+  openDialog(h('span', { className: 'error', textContent: text }), h('button', { className: 'primary', textContent: 'OK', onclick: closeDialog }))
+
+// runs in a worker while the dialog shows a spinner; aborting discards the result
+let arranging: Worker | null = null
+
+function arrange(even: boolean) {
+  if (arranging) return
+  const worker = (arranging = new Worker(new URL('./arrange.worker.ts', import.meta.url), { type: 'module' }))
+  openDialog(
+    h('div', { className: 'spinner' }),
+    h('span', { textContent: even ? 'Arranging evenly…' : 'Packing tightly…' }),
+    h('button', { textContent: 'Abort', tip: 'Stop and keep the old arrangement (Esc)', onclick: closeDialog }),
+  )
+  worker.onmessage = (e: MessageEvent<ArrangeResult>) => {
+    const { failed, placements } = e.data
+    closeDialog()
+    for (const { id, ...at } of placements) Object.assign(project.items.find(it => it.id === id)!, at)
+    changed()
+    if (failed) errorDialog(`${failed} of ${project.items.length} objects don't fit into the case with a min. wall of ${fmtLen(project.box.minWall)} ${unit()}; they were left where they were.`)
+  }
+  worker.postMessage({ project, even })
+}
+
+/** Asks for the paper size, then downloads the printable templates. */
+function pdfDialog() {
+  let paper = ''
+  const custom = PAPERS.A4.map(v => h('input', { type: 'number', min: '50', value: String(v) }))
+  const customRow = h('div', { className: 'row center', hidden: true }, 'Width × height', ...custom, 'mm')
+  const exportButton = h('button', { className: 'primary', textContent: 'Export', disabled: true, onclick: () => {
+    const size = paper === 'Custom' ? (custom.map(el => el.valueAsNumber) as [number, number]) : PAPERS[paper]
+    if (!(size[0] >= 50 && size[1] >= 50)) return
+    closeDialog()
+    download('incase.pdf', exportPdf(project, computeLayers(project), size))
+  } })
+  const choice = h('div', { className: 'seg' })
+  segmented(choice, [...Object.keys(PAPERS), 'Custom'].map((name): [string, string, string] => [name, name, '']), () => paper, v => {
+    paper = v
+    customRow.hidden = v !== 'Custom'
+    exportButton.disabled = false
+  })
+  openDialog(h('div', { className: 'dialog-form' },
+    h('h3', { textContent: 'Print templates (PDF)' }),
+    h('p', { className: 'hint', textContent: 'Choose the paper. Layers larger than a sheet are split onto several overlapping sheets with alignment crosses.' }),
+    h('div', { className: 'row center' }, choice),
+    customRow,
+    h('div', { className: 'row' }, h('span', { className: 'grow' }), h('button', { textContent: 'Cancel', onclick: closeDialog }), exportButton),
+  ))
+}
 
 /** Min. wall violation of one item for the "keep clear" option (0 = clear). */
 const violation = (it: Item) => wallViolations(project, it).get(it.id) ?? 0
@@ -392,17 +680,9 @@ function renderSelection() {
   shape.value = it.shape
   shape.onchange = () => {
     it.shape = shape.value as Shape
+    if (it.shape === 'polygon' && !it.pts.length) it.pts = boxCorners(it)
     changed('items', 'selection')
   }
-  const fit = input('number', () => (it.fit === null ? '' : fmtLen(it.fit)), el => {
-    if (el.value === '') it.fit = null
-    else if (Number.isFinite(el.valueAsNumber)) it.fit = inches ? el.valueAsNumber * MM_PER_IN : el.valueAsNumber
-    else return
-    remember(it)
-    changed()
-  })
-  fit.placeholder = `global ${fmtLen(project.box.fit)}`
-  fit.dataset.scrub = inches ? '0.02' : '0.5'
   const dims = DIMS[it.shape]
   const dimProp = ([label, k, tip]: [string, Dim, string]) => prop(label, size(() => it[k], v => ((it[k] = v), remember(it))), tip)
 
@@ -416,7 +696,7 @@ function renderSelection() {
       prop('Y', len(() => it.y, v => (it.y = v)), "Position of the object's centre, below the case centre (top view)"),
       prop('Rotation °', num(() => it.rot, v => (it.rot = v)), 'Rotation in the top view, clockwise'),
       ...dims.filter(([, k]) => k === 'r').map(dimProp),
-      prop('Fit', fit, 'Overrides the global fit for this object (+ loose, − tight grip); leave empty to use the global one'),
+      prop('Fit', len(() => it.fit, v => ((it.fit = v), remember(it))), 'How much bigger (+, loose) or smaller (−, tight grip) the cutout is than the object; new objects take the last value you set'),
     ),
     h('div', { className: 'row' },
       h('h4', { className: 'grow', textContent: 'Finger notches', tip: 'Round cutouts on the edge so you can grab the object' }),
@@ -447,7 +727,7 @@ function renderWarnings(conflicts: Set<string>) {
   const diff = total - project.box.depth
   const colors = project.materials.map(m => m.color.toLowerCase())
   const warnings = [
-    Math.abs(diff) > 0.01 && `Stack is ${fmtLen(Math.abs(diff))} ${unit()} ${diff < 0 ? 'lower' : 'taller'} than the case depth`,
+    diff > 0.01 && `Stack is ${fmtLen(diff)} ${unit()} taller than the case`,
     ...project.items.map(it => it.z + itemHeight(it) > total + 0.01 && `${it.name} reaches below the stack`),
     ...project.items.map(lidWarning),
     ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
@@ -459,8 +739,8 @@ function renderWarnings(conflicts: Set<string>) {
   el.dataset.tip = warnings.join(' · ')
 }
 
-function download(name: string, content: string, type: string) {
-  const href = URL.createObjectURL(new Blob([content], { type }))
+function download(name: string, content: string | Blob, type = '') {
+  const href = URL.createObjectURL(content instanceof Blob ? content : new Blob([content], { type }))
   h('a', { href, download: name }).click()
   setTimeout(() => URL.revokeObjectURL(href))
 }
@@ -522,7 +802,7 @@ file.onchange = async () => {
 }
 $('save').onclick = () => download('incase.json', JSON.stringify(project, null, 2), 'application/json')
 $('load').onclick = () => file.click()
-$('export-svg').onclick = () => download('incase.svg', exportSvg(project, computeLayers(project)), 'image/svg+xml')
+$('setup').onclick = guidedSetup
 
 segmented($('units'), [['mm', 'mm', ''], ['in', 'in', 'Projects and exports stay in mm']], () => unit(), v => {
   inches = v === 'in'
@@ -549,11 +829,12 @@ $('theme').onclick = () => {
   const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
   setPref('theme', theme)
   applyTheme(theme)
+  scheduleViews() // line colours are checked against the new background
 }
 
 // --- viewports ---
 
-const view2d = new View2D($('view2d'), { select, change: () => changed(), len: mm => `${fmtLen(mm)} ${unit()}`, violation })
+const view2d = new View2D($('view2d'), { select, change: () => changed(), len: mm => `${fmtLen(mm)} ${unit()}`, violation, createPolygon })
 view2d.snapStep = snapStep()
 for (const [key, apply] of [['snap', (on: boolean) => (view2d.snap = on)], ['constrain', (on: boolean) => (view2d.constrain = on)]] as const) {
   const box = $(key) as HTMLInputElement
@@ -647,6 +928,7 @@ const undoTool = tool('undo', 'Undo (⌘/Ctrl+Z)', () => restore(history.undo())
 const redoTool = tool('redo', 'Redo (⇧⌘Z / Ctrl+Y)', () => restore(history.redo()))
 $('toolbar').replaceChildren(
   ...(Object.entries(SHAPE_KEYS) as [string, Shape][]).map(([key, shape]) => tool(shape, `${SHAPES[shape]} (${key.toUpperCase()})`, () => addItem(shape))),
+  tool('polygon', 'Polygon: click its corners in the top view (P)', startPolygon),
   h('hr'),
   duplicateTool,
   deleteTool,
@@ -664,9 +946,11 @@ function updateChrome() {
   duplicateTool.disabled = deleteTool.disabled = !it
   undoTool.disabled = !history.canUndo
   redoTool.disabled = !history.canRedo
-  $('hint').textContent = it
+  $('hint').textContent = view2d.isDrawing
+    ? 'Click to add corners · click the first one, double-click or Enter to finish · Backspace removes the last · Esc cancels'
+    : it
     ? 'Drag to move · drag handle to rotate (Shift 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
-    : 'B C L S add · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
+    : 'B C L S add · Tab next object under the click · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
 }
 
 let frame = 0
@@ -691,13 +975,17 @@ function scheduleViews() {
 
 function renderAll() {
   renderCase()
+  presetPicker()
+  renderExport()
   changed('materials', 'items', 'selection')
 }
 
 addEventListener('keydown', e => {
-  if (!$('busy').hidden) {
-    if (e.key === 'Escape' || e.key === 'Enter') closeDialog()
-    return e.preventDefault()
+  if (!$('dialog').hidden) {
+    if (e.key === 'Escape') closeDialog()
+    // keys go only to the dialog's own fields and buttons
+    if (e.key === 'Escape' || !$('dialog').contains(e.target as Node)) e.preventDefault()
+    return
   }
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
   const key = e.key.toLowerCase()
@@ -706,12 +994,22 @@ addEventListener('keydown', e => {
   const step = (view2d.snap ? snapStep() : 1) * (e.shiftKey ? 10 : 1)
   const nudge: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
   const mod = e.metaKey || e.ctrlKey
+  if (view2d.isDrawing) {
+    if (e.key === 'Enter') view2d.finishDrawing()
+    else if (e.key === 'Escape') view2d.cancelDrawing()
+    else if (e.key === 'Backspace') view2d.undoPoint()
+    else return
+    updateChrome()
+    return e.preventDefault()
+  }
   if (mod && key === 'z') restore(e.shiftKey ? history.redo() : history.undo())
   else if (mod && key === 'y') restore(history.redo())
   else if (plain && SHAPE_KEYS[key]) addItem(SHAPE_KEYS[key])
   else if (plain && key === 'a') arrange(!e.shiftKey)
+  else if (plain && key === 'p') startPolygon()
   else if (plain && key === 'f') view3d.fit()
   else if (e.key === 'PageUp' || e.key === 'PageDown') stepLayer(e.key === 'PageUp' ? -1 : 1)
+  else if (e.key === 'Tab') view2d.cycle(e.shiftKey ? -1 : 1)
   else if (plain && LAYOUT_KEYS[key]) {
     setLayout(LAYOUT_KEYS[key])
     renderLayout()
@@ -725,7 +1023,9 @@ addEventListener('keydown', e => {
       it.y -= dy
     }
     changed()
-  } else if (it && (e.key === 'Delete' || e.key === 'Backspace')) remove(it)
+  } else if (it && (e.key === 'Delete' || e.key === 'Backspace')) {
+    if (!view2d.deleteVertex()) remove(it)
+  }
   else if (it && e.key === 'Escape') select(null)
   else if (it && (e.metaKey || e.ctrlKey) && key === 'd') duplicate(it)
   else return

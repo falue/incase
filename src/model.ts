@@ -1,4 +1,4 @@
-export type Shape = 'box' | 'cylinder' | 'lying' | 'sphere'
+export type Shape = 'box' | 'cylinder' | 'lying' | 'sphere' | 'polygon'
 export type Dim = 'l' | 'w' | 'h' | 'd' | 'r'
 
 export interface Material { id: string; name: string; thickness: number; color: string }
@@ -18,8 +18,11 @@ export interface Item extends Record<Dim, number> {
   y: number
   rot: number
   z: number
-  fit: number | null
+  /** How much bigger (+, loose) or smaller (−, tight grip) the cutout is than the object. */
+  fit: number
   notches: Notch[]
+  /** Corner points of a polygon item in its local frame (empty for other shapes). */
+  pts: { x: number; y: number }[]
   /** Diameter and depth (from the foam top) of all notches. */
   notchD: number
   notchDepth: number
@@ -35,12 +38,16 @@ export interface CaseDims {
   depth: number
   radius: number
   bottomRadius: number
-  fit: number
   /** Minimum material wall thickness: least foam between any two cuts and between cuts and the case wall. */
   minWall: number
   /** Inner depth of the lid; case depth + lid depth is the tallest anything may reach. */
   lidDepth: number
+  /** Values a preset had no data for (0 or assumed); cleared per field once edited. */
+  unknown: CaseKey[]
 }
+
+/** Case values a preset can fill in. */
+export type CaseKey = 'topL' | 'topW' | 'bottomL' | 'bottomW' | 'depth' | 'lidDepth' | 'radius' | 'bottomRadius'
 
 export interface Project {
   box: CaseDims
@@ -58,20 +65,27 @@ const KEY = 'incase.project'
 
 export const uid = () => crypto.randomUUID()
 
-export const itemHeight = (it: Item) => (it.shape === 'box' || it.shape === 'cylinder' ? it.h : it.d)
+export const itemHeight = (it: Item) => (it.shape === 'lying' || it.shape === 'sphere' ? it.d : it.h)
 
 /** Footprint extent [x, y] in the item's local frame, before the fit is applied. */
 export function itemSize(it: Item): [number, number] {
   if (it.shape === 'box') return [it.l, it.w]
   if (it.shape === 'lying') return [it.l, it.d]
+  if (it.shape === 'polygon') {
+    const xs = it.pts.map(p => p.x), ys = it.pts.map(p => p.y)
+    return [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]
+  }
   return [it.d, it.d]
 }
+
+/** Polygon corners for an item switched to the polygon shape: its box outline. */
+export const boxCorners = (it: Item) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([sx, sy]) => ({ x: (sx * it.l) / 2, y: (sy * it.w) / 2 }))
 
 /** `notchDepth` is usually the top layer's thickness. */
 export function defaultItem(shape: Shape, name: string, offset: number, notchDepth: number): Item {
   return {
     id: uid(), name, shape, x: offset, y: offset, rot: 0, z: 0,
-    l: 100, w: 60, h: 40, d: 60, r: 5, fit: null, notches: [], notchD: 25, notchDepth, notchR: 3,
+    l: 100, w: 60, h: 40, d: 60, r: 5, fit: 0, notches: [], pts: [], notchD: 25, notchDepth, notchR: 3,
   }
 }
 
@@ -85,15 +99,18 @@ export function perimeterPoint(it: Item, t: number) {
     return { x: r * Math.cos(a), y: r * Math.sin(a) }
   }
   const [l, w] = itemSize(it), hx = l / 2, hy = w / 2
-  const corners = [[0, hy], [hx, hy], [hx, -hy], [-hx, -hy], [-hx, hy], [0, hy]]
-  let s = (((t % 1) + 1) % 1) * 2 * (l + w)
+  const corners = it.shape === 'polygon'
+    ? [...it.pts, it.pts[0]].map(p => [p.x, p.y])
+    : [[0, hy], [hx, hy], [hx, -hy], [-hx, -hy], [-hx, hy], [0, hy]]
+  const total = corners.slice(1).reduce((sum, [x, y], i) => sum + Math.hypot(x - corners[i][0], y - corners[i][1]), 0)
+  let s = (((t % 1) + 1) % 1) * total
   for (let i = 1; i < corners.length; i++) {
     const [x0, y0] = corners[i - 1], [x1, y1] = corners[i]
     const len = Math.hypot(x1 - x0, y1 - y0)
     if (s <= len) return { x: x0 + ((x1 - x0) * s) / len, y: y0 + ((y1 - y0) * s) / len }
     s -= len
   }
-  return { x: 0, y: hy }
+  return { x: corners[0][0], y: corners[0][1] }
 }
 
 /** Fraction of the way around the outline closest to the local point (x, y). */
@@ -156,7 +173,7 @@ function defaultProject(): Project {
   const camera = { ...defaultItem('box', 'Camera', 0, materials.find(m => m.id === stack[0])!.thickness), l: 130, w: 80, h: 60, r: 8 }
   setNotchCount(camera, 1)
   return {
-    box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, fit: 1, minWall: 5, lidDepth: 20 },
+    box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, minWall: 5, lidDepth: 20, unknown: [] },
     materials,
     stack,
     stackAuto: true,
@@ -166,24 +183,11 @@ function defaultProject(): Project {
   }
 }
 
-/** Parses a saved project, filling fields added in later versions. */
-export function parseProject(json: string): Project {
-  const p: Project = JSON.parse(json)
-  p.box.minWall ??= (p.box as { safeZone?: number }).safeZone ?? 5 // was called safeZone
-  p.box.lidDepth ??= 20
-  p.box.fit ??= (p.box as { clearance?: number }).clearance ?? 1 // was called clearance
-  p.kerf ??= 0
-  for (const it of p.items) {
-    if (it.fit === undefined) it.fit = (it as { clearance?: number | null }).clearance ?? null
-    it.notchR ??= 3
-    // notches used to carry their own offset, diameter and depth
-    const old = it.notches as unknown as { dx: number; dy: number; d: number; depth: number; auto?: boolean }[]
-    if (it.notchDepth !== undefined) continue
-    it.notchD = old[0]?.d ?? 25
-    it.notchDepth = old[0]?.depth ?? 30
-    it.notches = old.map(n => ({ t: perimeterParam(it, n.dx, n.dy), manual: !n.auto }))
-  }
-  return p
+export const parseProject = (json: string): Project => JSON.parse(json)
+
+/** Empty project for the guided setup: default case and materials, no objects. */
+export function newProject(): Project {
+  return { ...defaultProject(), items: [] }
 }
 
 export function loadProject(): Project {
