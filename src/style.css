@@ -48,7 +48,7 @@ body {
   margin: 0;
   height: 100vh;
   display: grid;
-  grid-template: 'top top top' 38px 'tools view panel' minmax(0, 1fr) 'status status status' 24px / 44px minmax(0, 1fr) 320px;
+  grid-template: 'top top top top' 38px 'global view tools objects' minmax(0, 1fr) 'status status status status' 24px / 300px minmax(0, 1fr) 44px 300px;
   background: var(--bg);
   overflow: hidden;
 }
@@ -87,12 +87,14 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 .seg button.active { background: var(--accent); color: var(--accent-text); }
 
 /* top bar */
-#topbar { grid-area: top; display: flex; align-items: center; gap: 8px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.brand { font-weight: 700; letter-spacing: 0.02em; margin-right: 8px; }
+/* shares the page columns so the layout switch sits above the viewports */
+#topbar { grid-area: top; display: grid; grid-template-columns: subgrid; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { padding: 0 10px; font-weight: 700; letter-spacing: 0.02em; }
+#topbar .bar { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
 .spacer { flex: 1; }
 
 /* tool strip */
-#toolbar { grid-area: tools; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: var(--panel); border-right: 1px solid var(--line); }
+#toolbar { grid-area: tools; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: var(--panel); border-left: 1px solid var(--line); }
 #toolbar hr { width: 24px; border: none; border-top: 1px solid var(--line); margin: 4px 0; }
 .tool { width: 34px; height: 34px; padding: 0; display: grid; place-items: center; background: none; color: var(--muted); }
 .tool:hover { background: var(--hover); color: var(--text); }
@@ -118,8 +120,9 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 .tag { padding: 3px 8px; border-radius: 5px; background: var(--panel); color: var(--muted); font-weight: 600; }
 .overlay select { background: var(--panel); }
 
-.sections { display: grid; gap: 4px; padding: 8px 10px; border-radius: 8px; background: var(--panel); }
-.sections label { display: grid; grid-template-columns: 52px 160px; align-items: center; color: var(--muted); }
+.sections { display: grid; grid-template-columns: auto auto 160px; align-items: center; gap: 4px 6px; padding: 8px 10px; border-radius: 8px; background: var(--panel); color: var(--muted); }
+.sections .wide { grid-column: span 2; }
+.sections button.icon { padding: 0 5px; }
 .sections input[type='range'] { width: 160px; margin: 0; accent-color: var(--accent); }
 
 /* two stacked range inputs form one slider with two handles */
@@ -131,8 +134,10 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 .dual input::-moz-range-track { background: none; }
 .dual input::-moz-range-thumb { pointer-events: auto; width: 14px; height: 14px; border: none; border-radius: 50%; background: var(--accent); cursor: ew-resize; }
 
-/* right panel */
-#panel { grid-area: panel; overflow-y: auto; background: var(--panel); border-left: 1px solid var(--line); }
+/* side panels: global settings left, object settings right */
+#global, #objects { overflow-y: auto; background: var(--panel); }
+#global { grid-area: global; border-right: 1px solid var(--line); }
+#objects { grid-area: objects; border-left: 1px solid var(--line); }
 details { border-bottom: 1px solid var(--line); }
 details > div { padding: 0 10px 10px; }
 summary { padding: 8px 10px; font-weight: 600; cursor: pointer; user-select: none; list-style: none; }
@@ -186,7 +191,7 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 #view2d .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
 #view2d .hit { fill: none; stroke: transparent; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
 
-.tooltip { position: absolute; z-index: 2; max-width: 360px; padding: 4px 8px; border-radius: 5px; background: var(--panel); border: 1px solid var(--line); color: var(--text); pointer-events: none; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); }
+.tooltip { position: fixed; z-index: 20; max-width: 360px; padding: 4px 8px; border-radius: 5px; background: var(--panel); border: 1px solid var(--line); color: var(--text); pointer-events: none; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2); }
 .check { display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 5px; background: var(--panel); color: var(--muted); cursor: pointer; user-select: none; }
 .check input { margin: 0; accent-color: var(--accent); }
 
@@ -196,3 +201,19 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 .busy-box { display: flex; align-items: center; gap: 14px; padding: 16px 20px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); font-size: 13px; }
 .spinner { width: 22px; height: 22px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.count { min-width: 18px; text-align: center; font-weight: 600; }
+#view2d .handle.notch { cursor: move; }
+#view2d .layer.faint { stroke-opacity: 0.25; stroke-width: 1px; }
+.stepper { display: flex; align-items: center; gap: 2px; padding: 0 2px; border-radius: 5px; background: var(--panel); }
+#layer-label { padding: 0 4px; white-space: nowrap; }
+.grip { cursor: grab; color: var(--muted); padding: 0 2px; user-select: none; touch-action: none; }
+.sortable.dragging { opacity: 0.6; background: var(--hover); border-radius: 5px; }
+#stack .sortable { cursor: pointer; border-radius: 5px; }
+#stack .sortable.current { background: var(--selected); }
+
+/* stack rows share one column grid, so widths line up across rows */
+#stack { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr) auto auto; column-gap: 4px; }
+#stack > * { grid-column: 1 / -1; }
+#stack > button { justify-self: start; }
+#stack > .sortable { display: grid; grid-template-columns: subgrid; align-items: center; }
+#stack .range { text-align: right; font-variant-numeric: tabular-nums; }

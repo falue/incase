@@ -8,51 +8,61 @@
   <body>
     <header id="topbar">
       <span class="brand">incase</span>
-      <div class="seg" id="layout"></div>
-      <span class="spacer"></span>
-      <button id="save" title="Save project as JSON">Save</button>
-      <button id="load" title="Load project JSON">Load</button>
-      <button id="export-svg" class="primary" title="Export all layers as one SVG (mm)">Export SVG</button>
-      <div class="seg" id="units"></div>
-      <button id="theme" class="icon" title="Toggle dark / light">◐</button>
+      <div class="bar">
+        <div class="seg" id="layout"></div>
+        <span class="spacer"></span>
+        <button id="save" data-tip="Download the project as a JSON file">Save</button>
+        <button id="load" data-tip="Open a project JSON file (replaces the current project; undo brings it back)">Load</button>
+        <button id="export-svg" class="primary" data-tip="Download all layers side by side as one SVG in mm, ready for the laser">Export SVG</button>
+        <div class="seg" id="units"></div>
+        <button id="theme" class="icon" data-tip="Switch between dark and light mode">◐</button>
+      </div>
     </header>
-
-    <nav id="toolbar"></nav>
 
     <main id="viewports">
       <div class="pane" id="pane2d">
         <div id="view2d" class="view"></div>
-        <div class="overlay top-left"><span class="tag">Top</span><select id="layer-select" title="Overlay the cut lines of one layer"></select>
-          <label class="check" title="Snap positions to a 5 mm / ⅛ in grid and rotation to 15°"><input type="checkbox" id="snap" /> Snap</label>
-          <label class="check" title="Objects cannot leave the case or enter another object's safe zone"><input type="checkbox" id="constrain" /> Keep clear</label>
+        <div class="overlay top-left"><span class="tag">Top</span>
+          <label class="check" data-tip="Snap positions to a 5 mm (⅛ in) grid and rotation to 15°; arrow keys move one step"><input type="checkbox" id="snap" /> Snap</label>
+          <label class="check" data-tip="Moves that would push an object out of the case or deeper into a safe zone are refused"><input type="checkbox" id="constrain" /> Keep clear</label>
+          <!-- the label changes width, so it comes last and nothing else moves -->
+          <span class="stepper" data-tip="Layer whose cut lines are shown; the layers above and below appear faint">
+            <button id="layer-up" class="icon" data-tip="Layer above (PageUp)">▲</button><button id="layer-down" class="icon" data-tip="Layer below (PageDown)">▼</button><span id="layer-label"></span>
+          </span>
         </div>
       </div>
-      <div class="splitter" id="splitter" title="Drag to resize · double-click to reset"></div>
+      <div class="splitter" id="splitter" data-tip="Drag to resize the views · double-click to reset"></div>
       <div class="pane" id="pane3d">
         <div id="view3d" class="view"></div>
         <div class="overlay top-left"><span class="tag">3D</span></div>
         <div class="overlay top-right"><div class="seg" id="camera"></div></div>
-        <div class="overlay bottom-left sections" title="Double-click a slider to reset">
-          <label>Explode <input id="explode" type="range" min="0" max="40" value="0" /></label>
-          <label>X <span class="dual" id="section-x"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span></label>
-          <label>Y <span class="dual" id="section-y"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span></label>
-          <button id="section-reset" title="Show the whole case again">Reset sections</button>
+        <div class="overlay bottom-left sections">
+          <label for="explode" class="wide" data-tip="Lift the layers apart; objects move with the layer their top sits in">Explode</label><input id="explode" data-tip="Lift the layers apart · double-click to reset" type="range" min="0" max="40" value="0" />
+          <span data-tip="Show only a slice of the case left to right">X</span><button id="reset-x" class="icon" data-tip="Show the whole width again">↺</button>
+          <span class="dual" id="section-x" data-tip="Drag the handles to cut the 3D view left / right · double-click to reset"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span>
+          <span data-tip="Show only a slice of the case front to back">Y</span><button id="reset-y" class="icon" data-tip="Show the whole depth again">↺</button>
+          <span class="dual" id="section-y" data-tip="Drag the handles to cut the 3D view front / back · double-click to reset"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span>
         </div>
       </div>
     </main>
 
-    <aside id="panel">
-      <details open><summary>Objects</summary><div id="items" class="outliner"></div></details>
-      <details open id="selection-section"><summary>Selected</summary><div id="selection"></div></details>
+    <aside id="global">
       <details open><summary>Case</summary><div id="case" class="props"></div></details>
       <details open><summary>Materials <small>order = preference</small></summary><div id="materials"></div></details>
       <details open><summary>Stack <small>top → bottom</small></summary><div id="stack"></div></details>
     </aside>
 
+    <nav id="toolbar"></nav>
+
+    <aside id="objects">
+      <details open><summary>Objects</summary><div id="items" class="outliner"></div></details>
+      <details open id="selection-section"><summary>Selected</summary><div id="selection"></div></details>
+    </aside>
+
     <footer id="statusbar"><span id="hint"></span><span id="warnings"></span></footer>
 
     <div id="busy" hidden>
-      <div class="busy-box"><div class="spinner"></div><span id="busy-text"></span><button id="busy-abort" title="Esc">Abort</button></div>
+      <div class="busy-box"><div class="spinner"></div><span id="busy-text"></span><button id="busy-abort" data-tip="Stop and keep the old arrangement (Esc)">Abort</button></div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

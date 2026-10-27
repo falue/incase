@@ -2,14 +2,11 @@ export type Shape = 'box' | 'cylinder' | 'lying' | 'sphere'
 export type Dim = 'l' | 'w' | 'h' | 'd' | 'r'
 
 export interface Material { id: string; name: string; thickness: number; color: string }
-/** Circle cut from the foam top down to `depth`, offset (dx, dy) in the item's local frame. */
+/** Finger notch centred on the item's outline at fraction `t` of the way around (see perimeterPoint). */
 export interface Notch {
-  dx: number
-  dy: number
-  d: number
-  depth: number
-  /** Placed by the app (may be re-spread when notches are added); cleared once moved by hand. */
-  auto?: boolean
+  t: number
+  /** Moved by hand; such notches are never re-spread. */
+  manual?: boolean
 }
 
 /** All dims are kept for every shape so switching shapes is lossless; z is measured from the foam top. */
@@ -23,6 +20,11 @@ export interface Item extends Record<Dim, number> {
   z: number
   clearance: number | null
   notches: Notch[]
+  /** Diameter and depth (from the foam top) of all notches. */
+  notchD: number
+  notchDepth: number
+  /** Fillet radius where notches meet the object or each other. */
+  notchR: number
 }
 
 export interface CaseDims {
@@ -63,24 +65,26 @@ export function itemSize(it: Item): [number, number] {
   return [it.d, it.d]
 }
 
-export function defaultItem(shape: Shape, name: string, offset: number): Item {
+/** `notchDepth` is usually the top layer's thickness. */
+export function defaultItem(shape: Shape, name: string, offset: number, notchDepth: number): Item {
   return {
     id: uid(), name, shape, x: offset, y: offset, rot: 0, z: 0,
-    l: 100, w: 60, h: 40, d: 60, r: 5, clearance: null, notches: [],
+    l: 100, w: 60, h: 40, d: 60, r: 5, clearance: null, notches: [], notchD: 25, notchDepth, notchR: 3,
   }
 }
 
-const PERIMETER_STEPS = 96 // candidate notch positions around an item
+const PERIMETER_STEPS = 96 // candidate positions for new notches
+const PARAM_SAMPLES = 720 // resolution when mapping a point onto the outline
 
 /** Point at fraction t of the item's outline, starting at the bottom middle (local frame, y down). */
-function perimeterPoint(it: Item, t: number) {
+export function perimeterPoint(it: Item, t: number) {
   if (it.shape === 'cylinder' || it.shape === 'sphere') {
     const r = it.d / 2, a = Math.PI / 2 + 2 * Math.PI * t
     return { x: r * Math.cos(a), y: r * Math.sin(a) }
   }
   const [l, w] = itemSize(it), hx = l / 2, hy = w / 2
   const corners = [[0, hy], [hx, hy], [hx, -hy], [-hx, -hy], [-hx, hy], [0, hy]]
-  let s = t * 2 * (l + w)
+  let s = (((t % 1) + 1) % 1) * 2 * (l + w)
   for (let i = 1; i < corners.length; i++) {
     const [x0, y0] = corners[i - 1], [x1, y1] = corners[i]
     const len = Math.hypot(x1 - x0, y1 - y0)
@@ -90,37 +94,32 @@ function perimeterPoint(it: Item, t: number) {
   return { x: 0, y: hy }
 }
 
-const r2 = (v: number) => Math.round(v * 100) / 100
-
-/**
- * Adds a notch; `depth` is usually the top layer's thickness. On a sphere or standing cylinder whose notches were all placed by the app,
- * all notches are re-spread evenly around it (bottom, then top, then 120° apart, ...); otherwise the new notch goes
- * where it is farthest (along the outline) from the existing ones.
- */
-export function addNotch(it: Item, depth: number) {
-  const round = it.shape === 'sphere' || it.shape === 'cylinder'
-  if (!round || !it.notches.every(n => n.auto)) return void it.notches.push(nextNotch(it, depth))
-  it.notches.push({ dx: 0, dy: 0, d: 25, depth, auto: true })
-  const r = it.d / 2, count = it.notches.length
-  it.notches.forEach((n, k) => {
-    const a = Math.PI / 2 + (2 * Math.PI * k) / count
-    Object.assign(n, { dx: r2(r * Math.cos(a)), dy: r2(r * Math.sin(a)) })
-  })
+/** Fraction of the way around the outline closest to the local point (x, y). */
+export function perimeterParam(it: Item, x: number, y: number) {
+  let best = 0, bestDist = Infinity
+  for (let i = 0; i < PARAM_SAMPLES; i++) {
+    const q = perimeterPoint(it, i / PARAM_SAMPLES), d = Math.hypot(q.x - x, q.y - y)
+    if (d < bestDist) [best, bestDist] = [i / PARAM_SAMPLES, d]
+  }
+  return best
 }
 
-function nextNotch(it: Item, depth: number): Notch {
-  const n = PERIMETER_STEPS
-  const points = Array.from({ length: n }, (_, i) => perimeterPoint(it, i / n))
-  const taken = it.notches.map(nb => {
-    const dist = points.map(q => Math.hypot(q.x - nb.dx, q.y - nb.dy))
-    return dist.indexOf(Math.min(...dist))
-  })
-  let best = 0
-  if (taken.length) {
-    const gap = (i: number) => Math.min(...taken.map(j => Math.min(Math.abs(i - j), n - Math.abs(i - j))))
-    for (let i = 1; i < n; i++) if (gap(i) > gap(best)) best = i
+/**
+ * Adds or removes notches until there are `count`. New ones go where they are farthest (along the outline) from the
+ * others: bottom, top, right, left, then halfway between. Round items whose notches were all placed by the app
+ * get them re-spread evenly (bottom, then top, then 120° apart, ...). Removing drops the newest.
+ */
+export function setNotchCount(it: Item, count: number) {
+  it.notches.length = Math.min(it.notches.length, Math.max(0, count))
+  while (it.notches.length < count) {
+    const gap = (t: number) => Math.min(...it.notches.map(n => Math.min(Math.abs(t - n.t), 1 - Math.abs(t - n.t))))
+    let best = 0
+    for (let i = 1; i < PERIMETER_STEPS; i++) if (gap(i / PERIMETER_STEPS) > gap(best)) best = i / PERIMETER_STEPS
+    it.notches.push({ t: best })
   }
-  return { dx: r2(points[best].x), dy: r2(points[best].y), d: 25, depth, auto: true }
+  if ((it.shape === 'sphere' || it.shape === 'cylinder') && !it.notches.some(n => n.manual)) {
+    it.notches.forEach((n, k) => (n.t = k / it.notches.length))
+  }
 }
 
 /** Fills `depth` with as few layers as possible, preferring materials earlier in the list; never exceeds depth. */
@@ -152,8 +151,8 @@ function defaultProject(): Project {
     { id: uid(), name: 'Foam 5', thickness: 5, color: '#0000ff' },
   ]
   const stack = suggestStack(materials, 80)
-  const camera = { ...defaultItem('box', 'Camera', 0), l: 130, w: 80, h: 60, r: 8 }
-  addNotch(camera, materials.find(m => m.id === stack[0])!.thickness)
+  const camera = { ...defaultItem('box', 'Camera', 0, materials.find(m => m.id === stack[0])!.thickness), l: 130, w: 80, h: 60, r: 8 }
+  setNotchCount(camera, 1)
   return {
     box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, clearance: 1, safeZone: 5 },
     materials,
@@ -170,6 +169,15 @@ export function parseProject(json: string): Project {
   const p: Project = JSON.parse(json)
   p.box.safeZone ??= 5
   p.kerf ??= 0
+  for (const it of p.items) {
+    it.notchR ??= 3
+    // notches used to carry their own offset, diameter and depth
+    const old = it.notches as unknown as { dx: number; dy: number; d: number; depth: number; auto?: boolean }[]
+    if (it.notchDepth !== undefined) continue
+    it.notchD = old[0]?.d ?? 25
+    it.notchDepth = old[0]?.depth ?? 30
+    it.notches = old.map(n => ({ t: perimeterParam(it, n.dx, n.dy), manual: !n.auto }))
+  }
   return p
 }
 

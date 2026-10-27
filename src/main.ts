@@ -3,7 +3,7 @@ import type { ArrangeResult } from './arrange'
 import { AREA_TOL, computeLayers, safeZoneConflicts, safeZoneViolations, stackTotal } from './geometry'
 import { exportSvg } from './export'
 import { History } from './history'
-import { addNotch, defaultItem, itemHeight, loadProject, parseProject, saveProject, suggestStack, uid, type Dim, type Item, type Project, type Shape } from './model'
+import { defaultItem, itemHeight, loadProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type Dim, type Item, type Project, type Shape } from './model'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
 
@@ -13,11 +13,22 @@ type Layout = 'top' | 'split' | '3d'
 const SHAPES: Record<Shape, string> = { box: 'Box', cylinder: 'Cylinder', lying: 'Lying cylinder', sphere: 'Sphere' }
 const SHAPE_KEYS: Record<string, Shape> = { b: 'box', c: 'cylinder', l: 'lying', s: 'sphere' }
 const LAYOUT_KEYS: Record<string, Layout> = { 1: 'top', 2: 'split', 3: '3d' }
-const DIMS: Record<Shape, [string, Dim][]> = {
-  box: [['Length', 'l'], ['Width', 'w'], ['Depth', 'h'], ['Corner R', 'r']],
-  cylinder: [['Diameter', 'd'], ['Depth', 'h']],
-  lying: [['Diameter', 'd'], ['Length', 'l']],
-  sphere: [['Diameter', 'd']],
+const DIMS: Record<Shape, [string, Dim, string][]> = {
+  box: [
+    ['Length', 'l', "Size along the object's own X axis (before rotation)"],
+    ['Width', 'w', "Size along the object's own Y axis (before rotation)"],
+    ['Depth', 'h', 'Height of the box, i.e. how deep it sinks into the foam'],
+    ['Corner R', 'r', 'Corner radius of the box seen from above'],
+  ],
+  cylinder: [
+    ['Diameter', 'd', ''],
+    ['Depth', 'h', 'Height of the cylinder, i.e. how deep it sinks into the foam'],
+  ],
+  lying: [
+    ['Diameter', 'd', 'Diameter of the lying cylinder; also how deep it sinks into the foam'],
+    ['Length', 'l', ''],
+  ],
+  sphere: [['Diameter', 'd', 'Diameter of the sphere; the cut stays full width above its centre so it can be lifted out']],
 }
 const PALETTE = ['#000000', '#ff0000', '#0000ff', '#00a000', '#ff8000', '#00a0a0', '#a000a0', '#808000']
 const ICONS = {
@@ -42,7 +53,7 @@ const setPref = (key: string, value: string) => localStorage.setItem(`incase.${k
 
 let project: Project = loadProject()
 let selectedId: string | null = null
-let layerIndex = -1 // -1 = no layer overlay
+let layerIndex = 0 // layer shown in the top view, 0 = topmost
 let inches = pref('units') === 'in' // display only, the model is always mm
 const history = new History(JSON.stringify(project))
 
@@ -53,16 +64,17 @@ const fmtLen = (mm: number) => fmt(inches ? mm / MM_PER_IN : mm)
 const unit = () => (inches ? 'in' : 'mm')
 const snapStep = () => (inches ? MM_PER_IN / 8 : 5)
 const selected = () => project.items.find(it => it.id === selectedId)
-const swap = <T>(a: T[], i: number, j: number) => {
-  if (j >= 0 && j < a.length) [a[i], a[j]] = [a[j], a[i]]
-}
 
-function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...children: (Node | string)[]) {
+/** Creates an element; `tip` becomes its hover help (see the tooltip below). */
+function h<K extends keyof HTMLElementTagNameMap>(tag: K, { tip, ...props }: Record<string, unknown> = {}, ...children: (Node | string)[]) {
   const el = document.createElement(tag)
   Object.assign(el, props)
+  if (tip) el.dataset.tip = String(tip)
   el.append(...children)
   return el
 }
+
+const withTip = <T extends HTMLElement>(el: T, tip: string) => ((el.dataset.tip = tip), el)
 
 // Inputs remember their getter so values changed elsewhere (dragging, scrubbing) can be synced in place.
 const getters = new WeakMap<HTMLInputElement, () => string>()
@@ -73,21 +85,26 @@ function input(type: string, get: () => string, onInput: (el: HTMLInputElement) 
   return el
 }
 
-/** Number input; `scrub` is the value change per pixel when dragging its label. */
-function num(get: () => number, set: (v: number) => void, scrub = 1) {
+/** Number input; `scrub` is the value change per pixel when dragging its label; values below `min` are clamped. */
+function num(get: () => number, set: (v: number) => void, scrub = 1, min = -Infinity) {
   const el = input('number', () => fmt(get()), el => {
     if (Number.isFinite(el.valueAsNumber)) {
-      set(el.valueAsNumber)
+      set(Math.max(min, el.valueAsNumber))
       changed()
     }
   })
   el.dataset.scrub = String(scrub)
+  if (min > -Infinity) el.min = String(min)
+  el.onchange = () => (el.value = fmt(get())) // show the clamped value after typing
   return el
 }
 
 /** Length input: shown in the display unit, stored in mm. */
-const len = (get: () => number, set: (mm: number) => void) =>
-  num(() => (inches ? get() / MM_PER_IN : get()), v => set(inches ? v * MM_PER_IN : v), inches ? 0.02 : 0.5)
+const len = (get: () => number, set: (mm: number) => void, min = -Infinity) =>
+  num(() => (inches ? get() / MM_PER_IN : get()), v => set(inches ? v * MM_PER_IN : v), inches ? 0.02 : 0.5, min)
+
+/** Length that cannot go negative (sizes, radii, depths). */
+const size = (get: () => number, set: (mm: number) => void) => len(get, set, 0)
 
 const text = (get: () => string, set: (v: string) => void, ...rebuild: Section[]) =>
   input('text', get, el => {
@@ -101,8 +118,8 @@ const color = (get: () => string, set: (v: string) => void) =>
     changed()
   })
 
-/** Labelled field; dragging the label of a number field scrubs its value (Shift = fine). */
-function prop(label: string, el: HTMLInputElement | HTMLSelectElement, className = '') {
+/** Labelled field with hover help; dragging the label of a number field scrubs its value (Shift = fine). */
+function prop(label: string, el: HTMLInputElement | HTMLSelectElement, tip: string, className = '') {
   const name = h('span', { textContent: label })
   if (el instanceof HTMLInputElement && el.dataset.scrub) {
     name.className = 'scrub'
@@ -116,26 +133,56 @@ function prop(label: string, el: HTMLInputElement | HTMLSelectElement, className
       name.onpointerup = () => (name.onpointermove = null)
     }
   }
-  return h('div', { className: `prop ${className}` }, name, el)
+  return h('div', { className: `prop ${className}`, tip }, name, el)
 }
 
-const button = (label: string, title: string, action: () => void, ...rebuild: Section[]) =>
-  h('button', { textContent: label, title, onclick: () => (action(), changed(...rebuild)) })
+const button = (label: string, tip: string, action: () => void, ...rebuild: Section[]) =>
+  h('button', { textContent: label, tip, onclick: () => (action(), changed(...rebuild)) })
 
-const iconButton = (label: string, title: string, action: () => void, ...rebuild: Section[]) =>
-  Object.assign(button(label, title, action, ...rebuild), { className: 'icon' })
+const iconButton = (label: string, tip: string, action: () => void, ...rebuild: Section[]) =>
+  Object.assign(button(label, tip, action, ...rebuild), { className: 'icon' })
+
+const move = <T>(a: T[], from: number, to: number) => a.splice(to, 0, ...a.splice(from, 1))
+
+/** Grip for reordering `.sortable` rows by dragging; rows move live, `drop(from, to)` commits the new order. */
+function dragHandle(drop: (from: number, to: number) => void) {
+  const grip = h('span', { className: 'grip', textContent: '⠿', tip: 'Drag to reorder' })
+  grip.onpointerdown = e => {
+    const row = grip.closest<HTMLElement>('.sortable')!, list = row.parentElement!
+    const rows = () => [...list.querySelectorAll<HTMLElement>(':scope > .sortable')]
+    const from = rows().indexOf(row)
+    grip.setPointerCapture(e.pointerId)
+    row.classList.add('dragging')
+    grip.onpointermove = m => {
+      const others = rows().filter(r => r !== row)
+      const to = others.filter(r => {
+        const b = r.getBoundingClientRect()
+        return b.top + b.height / 2 < m.clientY
+      }).length
+      if (to < others.length) others[to].before(row)
+      else others.at(-1)?.after(row)
+    }
+    grip.onpointerup = () => {
+      grip.onpointermove = null
+      row.classList.remove('dragging')
+      const to = rows().indexOf(row)
+      if (to !== from) drop(from, to)
+    }
+  }
+  return grip
+}
 
 /** Segmented control with one active option; returns its re-render function. */
-function segmented<T extends string>(host: HTMLElement, options: [T, string][], get: () => T, set: (v: T) => void) {
+function segmented<T extends string>(host: HTMLElement, options: [T, string, string][], get: () => T, set: (v: T) => void) {
   const render = () =>
-    host.replaceChildren(...options.map(([value, textContent]) =>
-      h('button', { textContent, className: value === get() ? 'active' : '', onclick: () => (set(value), render()) })))
+    host.replaceChildren(...options.map(([value, textContent, tip]) =>
+      h('button', { textContent, tip, className: value === get() ? 'active' : '', onclick: () => (set(value), render()) })))
   render()
   return render
 }
 
 function syncInputs() {
-  for (const el of $('panel').querySelectorAll('input')) {
+  for (const el of document.querySelectorAll<HTMLInputElement>('aside input')) {
     const get = getters.get(el)
     if (get && el !== document.activeElement) el.value = get()
   }
@@ -159,20 +206,20 @@ function renderCase() {
   const b = project.box
   // bottom size follows the top while both are equal (straight walls)
   const linked = (top: 'topL' | 'topW', bottom: 'bottomL' | 'bottomW') =>
-    len(() => b[top], v => {
+    size(() => b[top], v => {
       if (b[bottom] === b[top]) b[bottom] = v
       b[top] = v
     })
   $('case').replaceChildren(
-    prop('Top L', linked('topL', 'bottomL')),
-    prop('Top W', linked('topW', 'bottomW')),
-    prop('Bottom L', len(() => b.bottomL, v => (b.bottomL = v))),
-    prop('Bottom W', len(() => b.bottomW, v => (b.bottomW = v))),
-    prop('Depth', len(() => b.depth, v => (b.depth = v))),
-    prop('Clearance', len(() => b.clearance, v => (b.clearance = v))),
-    prop('Edge R', len(() => b.radius, v => (b.radius = v))),
-    prop('Bottom R', len(() => b.bottomRadius, v => (b.bottomRadius = v))),
-    prop('Safe zone', len(() => b.safeZone, v => (b.safeZone = v)), 'wide'),
+    prop('Top L', linked('topL', 'bottomL'), 'Inner length of the case at the top opening (the bottom follows while both are equal)'),
+    prop('Top W', linked('topW', 'bottomW'), 'Inner width of the case at the top opening (the bottom follows while both are equal)'),
+    prop('Bottom L', size(() => b.bottomL, v => (b.bottomL = v)), 'Inner length at the floor; smaller than the top for tapered walls'),
+    prop('Bottom W', size(() => b.bottomW, v => (b.bottomW = v)), 'Inner width at the floor; smaller than the top for tapered walls'),
+    prop('Depth', size(() => b.depth, v => (b.depth = v)), 'Inner depth of the case; the foam stack rests on its floor'),
+    prop('Clearance', len(() => b.clearance, v => (b.clearance = v)), 'Gap between objects and foam: + = loose, − = tight grip. Objects can override it'),
+    prop('Edge R', size(() => b.radius, v => (b.radius = v)), 'Corner radius of the case seen from above'),
+    prop('Bottom R', size(() => b.bottomRadius, v => (b.bottomRadius = v)), 'Radius where the floor meets the walls; makes the lowest layers smaller'),
+    prop('Safe zone', size(() => b.safeZone, v => (b.safeZone = v)), 'Minimum foam left between any two cutouts and between cutouts and the case wall', 'wide'),
   )
 }
 
@@ -181,25 +228,25 @@ function renderMaterials() {
   const nextColor = () => PALETTE.find(c => c !== project.labelColor && !ms.some(m => m.color === c)) ?? '#808080'
   $('materials').replaceChildren(
     ...ms.map((m, i) =>
-      h('div', { className: 'row' },
-        color(() => m.color, v => (m.color = v)),
-        Object.assign(text(() => m.name, v => (m.name = v)), { className: 'grow' }),
-        prop(unit(), len(() => m.thickness, v => (m.thickness = v)), 'short'),
-        iconButton('↑', 'Move up (more preferred)', () => swap(ms, i, i - 1), 'materials'),
-        iconButton('↓', 'Move down', () => swap(ms, i, i + 1), 'materials'),
-        iconButton('✕', 'Remove material', () => {
+      h('div', { className: 'row sortable' },
+        dragHandle((from, to) => (move(ms, from, to), changed('materials'))),
+        withTip(color(() => m.color, v => (m.color = v)), 'Cut line colour of this material in the exported SVG'),
+        withTip(Object.assign(text(() => m.name, v => (m.name = v)), { className: 'grow' }), 'Material name, shown on the layer labels'),
+        prop(unit(), size(() => m.thickness, v => (m.thickness = v)), 'Sheet thickness', 'short'),
+        iconButton('✕', 'Also removes its layers from the stack', () => {
           ms.splice(i, 1)
           project.stack = project.stack.filter(id => id !== m.id)
         }, 'materials'),
       ),
     ),
     h('div', { className: 'row' },
-      button('+ Material', 'Add material', () => ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor() }), 'materials'),
+      button('+ Material', '', () => ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor() }), 'materials'),
       h('span', { className: 'grow' }),
-      color(() => project.labelColor, v => (project.labelColor = v)),
+      withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Colour of the layer labels in the export; must differ from all material colours'),
       h('span', { className: 'hint', textContent: 'Label colour' }),
     ),
-    h('div', { className: 'props' }, prop('Laser kerf', len(() => project.kerf, v => (project.kerf = v)), 'wide')),
+    h('div', { className: 'props' },
+      prop('Laser kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the laser cut; exported pieces grow by half of it so they come out at nominal size', 'wide')),
   )
 }
 
@@ -220,26 +267,31 @@ function renderStack() {
       manual(() => (stack[i] = select.value))()
       changed()
     }
-    return h('div', { className: 'row' },
+    // clicking a row shows that layer in the top view
+    const showLayer = (e: MouseEvent) => {
+      if ((e.target as Element).closest('select, button, .grip')) return
+      layerIndex = i
+      scheduleViews()
+    }
+    return h('div', { className: 'row sortable', onclick: showLayer },
+      dragHandle((from, to) => (move(stack, from, to), (project.stackAuto = false), changed())),
       h('span', { className: 'swatch', style: `background:${m.color}` }),
-      h('span', { className: 'idx', textContent: String(i + 1) }),
+      h('span', { className: 'idx', textContent: String(i + 1), tip: 'Layer number, counted from the top (as on the export labels)' }),
       select,
-      h('span', { className: 'hint', textContent: `${fmtLen(a)}–${fmtLen(z)}` }),
-      iconButton('↑', 'Move up', manual(() => swap(stack, i, i - 1))),
-      iconButton('↓', 'Move down', manual(() => swap(stack, i, i + 1))),
-      iconButton('✕', 'Remove layer', manual(() => stack.splice(i, 1))),
+      h('span', { className: 'hint range', textContent: `${fmtLen(a)}–${fmtLen(z)}`, tip: 'Depth range of this layer, measured from the foam top' }),
+      iconButton('✕', '', manual(() => stack.splice(i, 1))),
     )
   })
   $('stack').replaceChildren(
     h('div', { className: 'row' },
-      h('span', { className: 'total' + (Math.abs(z - box.depth) > 0.01 ? ' off' : ''), textContent: `${fmtLen(z)} / ${fmtLen(box.depth)} ${unit()}` }),
+      h('span', { className: 'total' + (Math.abs(z - box.depth) > 0.01 ? ' off' : ''), textContent: `${fmtLen(z)} / ${fmtLen(box.depth)} ${unit()}`, tip: 'Stack height / case depth' }),
       h('span', { className: 'grow' }),
       project.stackAuto
-        ? h('span', { className: 'hint', textContent: 'auto-filled' })
+        ? h('span', { className: 'hint', textContent: 'auto-filled', tip: 'The stack refills itself from the material list until you edit it' })
         : button('Auto-fill', 'Refill from the material list', () => (project.stackAuto = true)),
     ),
     ...rows,
-    button('+ Layer', 'Add layer at the bottom', manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id))),
+    button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id))),
   )
 }
 
@@ -261,8 +313,14 @@ function select(id: string | null) {
   changed('items', 'selection')
 }
 
+// sizes of the last edited object; new objects start with them
+const INHERITED = ['l', 'w', 'h', 'd', 'r', 'clearance', 'notchD', 'notchDepth', 'notchR'] as const
+let template: Partial<Item> = {}
+const remember = (it: Item) => (template = Object.fromEntries(INHERITED.map(k => [k, it[k]])))
+
 function addItem(shape: Shape) {
-  const it = defaultItem(shape, `${SHAPES[shape]} ${project.items.length + 1}`, (project.items.length % 8) * 10)
+  const top = project.materials.find(m => m.id === project.stack[0])
+  const it = { ...defaultItem(shape, `${SHAPES[shape]} ${project.items.length + 1}`, (project.items.length % 8) * 10, top?.thickness ?? 30), ...template }
   project.items.push(it)
   select(it.id)
 }
@@ -327,6 +385,7 @@ function renderSelection() {
     if (el.value === '') it.clearance = null
     else if (Number.isFinite(el.valueAsNumber)) it.clearance = inches ? el.valueAsNumber * MM_PER_IN : el.valueAsNumber
     else return
+    remember(it)
     changed()
   })
   clearance.placeholder = `global ${fmtLen(project.box.clearance)}`
@@ -334,29 +393,27 @@ function renderSelection() {
 
   $('selection').replaceChildren(
     h('div', { className: 'props' },
-      prop('Name', text(() => it.name, v => (it.name = v), 'items'), 'wide'),
-      prop('Shape', shape, 'wide'),
-      prop('X', len(() => it.x, v => (it.x = v))),
-      prop('Y', len(() => it.y, v => (it.y = v))),
-      prop('Rotation °', num(() => it.rot, v => (it.rot = v))),
-      prop('Z from top', len(() => it.z, v => (it.z = v))),
-      ...DIMS[it.shape].map(([label, k]) => prop(label, len(() => it[k], v => (it[k] = v)))),
-      prop('Clearance', clearance),
+      prop('Name', text(() => it.name, v => (it.name = v), 'items'), '', 'wide'),
+      prop('Shape', shape, 'Shape of the object; sizes are kept when switching', 'wide'),
+      prop('X', len(() => it.x, v => (it.x = v)), "Position of the object's centre, right of the case centre"),
+      prop('Y', len(() => it.y, v => (it.y = v)), "Position of the object's centre, below the case centre (top view)"),
+      prop('Rotation °', num(() => it.rot, v => (it.rot = v)), 'Rotation in the top view, clockwise'),
+      prop('Z from top', len(() => it.z, v => (it.z = v)), "How far below the foam top the object's top sits; the cut stays open above it"),
+      ...DIMS[it.shape].map(([label, k, tip]) => prop(label, size(() => it[k], v => ((it[k] = v), remember(it))), tip)),
+      prop('Clearance', clearance, 'Overrides the global clearance for this object; leave empty to use the global one'),
     ),
-    h('h4', { textContent: 'Finger notches' }),
-    ...it.notches.map((n, i) =>
-      h('div', { className: 'row' },
-        prop('dx', len(() => n.dx, v => Object.assign(n, { dx: v, auto: false }))),
-        prop('dy', len(() => n.dy, v => Object.assign(n, { dy: v, auto: false }))),
-        prop('Ø', len(() => n.d, v => (n.d = v))),
-        prop('Depth', len(() => n.depth, v => (n.depth = v))),
-        iconButton('✕', 'Remove notch', () => it.notches.splice(i, 1), 'selection'),
-      ),
+    h('div', { className: 'row' },
+      h('h4', { className: 'grow', textContent: 'Finger notches', tip: 'Round cutouts on the edge so you can grab the object' }),
+      iconButton('−', '', () => setNotchCount(it, it.notches.length - 1), 'selection'),
+      h('span', { className: 'count', textContent: String(it.notches.length) }),
+      iconButton('+', '', () => setNotchCount(it, it.notches.length + 1), 'selection'),
     ),
-    button('+ Notch', 'Add finger notch (one top layer deep)', () => {
-      const top = project.materials.find(m => m.id === project.stack[0])
-      addNotch(it, top?.thickness ?? itemHeight(it))
-    }, 'selection'),
+    h('div', { className: 'props' },
+      prop('Ø', size(() => it.notchD, v => ((it.notchD = v), remember(it))), 'Diameter of all finger notches of this object'),
+      prop('Depth', size(() => it.notchDepth, v => ((it.notchDepth = v), remember(it))), 'How deep the notches go, measured from the foam top'),
+      prop('Fillet R', size(() => it.notchR, v => ((it.notchR = v), remember(it))), 'Rounds the corners where notches meet the object or each other', 'wide'),
+    ),
+    it.notches.length ? h('p', { className: 'hint', textContent: 'Drag the dots in the top view to move notches along the edge.' }) : '',
   )
 }
 
@@ -373,7 +430,7 @@ function renderWarnings(conflicts: Set<string>) {
   ].filter((w): w is string => !!w)
   const el = $('warnings')
   el.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
-  el.title = warnings.join('\n')
+  el.dataset.tip = warnings.join(' · ')
 }
 
 function download(name: string, content: string, type: string) {
@@ -381,6 +438,45 @@ function download(name: string, content: string, type: string) {
   h('a', { href, download: name }).click()
   setTimeout(() => URL.revokeObjectURL(href))
 }
+
+// --- hover help: any element with data-tip, after the usual title delay; hidden while a button is held ---
+
+const TOOLTIP_DELAY = 500 // ms, like native title tooltips
+const tooltip = h('div', { className: 'tooltip', hidden: true })
+document.body.append(tooltip)
+let tipTarget: Element | null = null
+let tipTimer = 0
+let pointer = { x: 0, y: 0 }
+
+function placeTooltip() {
+  const { offsetWidth: w, offsetHeight: ht } = tooltip
+  tooltip.style.left = `${Math.min(pointer.x + 14, innerWidth - w - 8)}px`
+  tooltip.style.top = `${pointer.y + 18 + ht > innerHeight ? pointer.y - ht - 10 : pointer.y + 18}px`
+}
+
+function hideTooltip() {
+  clearTimeout(tipTimer)
+  tipTarget = null
+  tooltip.hidden = true
+}
+
+addEventListener('pointermove', e => {
+  pointer = { x: e.clientX, y: e.clientY }
+  const target = e.buttons ? null : (e.target as Element).closest('[data-tip]')
+  if (target !== tipTarget) {
+    hideTooltip()
+    tipTarget = target
+    if (target) {
+      tipTimer = setTimeout(() => {
+        tooltip.textContent = target.getAttribute('data-tip')
+        tooltip.hidden = false
+        placeTooltip()
+      }, TOOLTIP_DELAY)
+    }
+  } else if (!tooltip.hidden) placeTooltip()
+})
+addEventListener('pointerdown', hideTooltip)
+document.documentElement.addEventListener('pointerleave', hideTooltip)
 
 // --- top bar ---
 
@@ -402,7 +498,7 @@ $('save').onclick = () => download('incase.json', JSON.stringify(project, null, 
 $('load').onclick = () => file.click()
 $('export-svg').onclick = () => download('incase.svg', exportSvg(project, computeLayers(project)), 'image/svg+xml')
 
-segmented($('units'), [['mm', 'mm'], ['in', 'in']], () => unit(), v => {
+segmented($('units'), [['mm', 'mm', ''], ['in', 'in', 'Projects and exports stay in mm']], () => unit(), v => {
   inches = v === 'in'
   setPref('units', v)
   view2d.snapStep = snapStep()
@@ -417,7 +513,7 @@ function setLayout(v: Layout) {
   viewports.className = `layout-${v}`
 }
 setLayout(layout)
-const renderLayout = segmented($('layout'), [['top', 'Top'], ['split', 'Split'], ['3d', '3D']], () => layout, setLayout)
+const renderLayout = segmented($('layout'), [['top', 'Top', 'Top view only (1)'], ['split', 'Split', 'Top view and 3D side by side (2)'], ['3d', '3D', '3D view only (3)']], () => layout, setLayout)
 
 function applyTheme(theme: string) {
   document.documentElement.dataset.theme = theme
@@ -465,11 +561,14 @@ splitter.onpointerdown = e => {
 }
 splitter.ondblclick = () => setSplit(0.5)
 
-const layerSelect = $('layer-select') as HTMLSelectElement
-layerSelect.onchange = () => {
-  layerIndex = Number(layerSelect.value)
+const stepLayer = (step: number) => {
+  layerIndex += step // clamped when the views render
   scheduleViews()
 }
+const layerUp = $('layer-up') as HTMLButtonElement
+const layerDown = $('layer-down') as HTMLButtonElement
+layerUp.onclick = () => stepLayer(-1)
+layerDown.onclick = () => stepLayer(1)
 
 const explode = $('explode') as HTMLInputElement
 const setExplode = () => {
@@ -482,7 +581,6 @@ explode.ondblclick = () => {
   setExplode()
 }
 
-const sectionResets: (() => void)[] = []
 for (const axis of ['x', 'y'] as const) {
   const slider = $(`section-${axis}`)
   const [from, to] = slider.querySelectorAll('input')
@@ -499,19 +597,18 @@ for (const axis of ['x', 'y'] as const) {
     update()
   }
   slider.ondblclick = reset
-  sectionResets.push(reset)
+  $(`reset-${axis}`).onclick = reset
 }
-$('section-reset').onclick = () => sectionResets.forEach(reset => reset())
 
 view3d.setOrthographic(pref('camera') !== 'persp')
-segmented($('camera'), [['ortho', 'Ortho'], ['persp', 'Persp']], () => (view3d.isOrthographic ? 'ortho' : 'persp'), v => {
+segmented($('camera'), [['ortho', 'Ortho', 'Orthographic: no perspective distortion, sizes compare directly'], ['persp', 'Persp', '']], () => (view3d.isOrthographic ? 'ortho' : 'persp'), v => {
   view3d.setOrthographic(v === 'ortho')
   setPref('camera', v)
 })
 
 // --- tool strip & status bar ---
 
-const tool = (name: keyof typeof ICONS, title: string, onclick: () => void) => h('button', { className: 'tool', title, innerHTML: icon(name), onclick })
+const tool = (name: keyof typeof ICONS, tip: string, onclick: () => void) => h('button', { className: 'tool', tip, innerHTML: icon(name), onclick })
 const duplicateTool = tool('duplicate', 'Duplicate (⌘/Ctrl+D)', () => {
   const it = selected()
   if (it) duplicate(it)
@@ -543,7 +640,7 @@ function updateChrome() {
   redoTool.disabled = !history.canRedo
   $('hint').textContent = it
     ? 'Drag to move · drag handle to rotate (Shift 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
-    : 'B C L S add · A arrange evenly, ⇧A pack · F fit 3D · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
+    : 'B C L S add · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
 }
 
 let frame = 0
@@ -553,14 +650,16 @@ function scheduleViews() {
     const layers = computeLayers(project)
     const conflicts = safeZoneConflicts(project)
     renderWarnings(conflicts)
-    if (layerIndex >= layers.length) layerIndex = -1
-    layerSelect.replaceChildren(
-      h('option', { value: '-1', textContent: 'No layer overlay' }),
-      ...layers.map((l, i) => h('option', { value: String(i), textContent: `Layer ${i + 1} · ${l.material.name}` })),
-    )
-    layerSelect.value = String(layerIndex)
-    view2d.render(project, selectedId, layers[layerIndex] ?? null, conflicts)
-    view3d.update(project, layers, selectedId)
+    layerIndex = Math.max(0, Math.min(layerIndex, layers.length - 1))
+    const layer = layers[layerIndex]
+    $('layer-label').textContent = layer
+      ? `Layer ${layerIndex + 1}/${layers.length} · ${layer.material.name} · ${fmtLen(layer.a)}–${fmtLen(layer.b)} ${unit()}`
+      : 'No layers'
+    layerUp.disabled = layerIndex <= 0
+    layerDown.disabled = layerIndex >= layers.length - 1
+    $('stack').querySelectorAll('.sortable').forEach((row, i) => row.classList.toggle('current', i === layerIndex))
+    view2d.render(project, selectedId, layers, layerIndex, conflicts)
+    view3d.update(project, layers, selectedId, layerIndex)
   })
 }
 
@@ -586,6 +685,7 @@ addEventListener('keydown', e => {
   else if (plain && SHAPE_KEYS[key]) addItem(SHAPE_KEYS[key])
   else if (plain && key === 'a') arrange(!e.shiftKey)
   else if (plain && key === 'f') view3d.fit()
+  else if (e.key === 'PageUp' || e.key === 'PageDown') stepLayer(e.key === 'PageUp' ? -1 : 1)
   else if (plain && LAYOUT_KEYS[key]) {
     setLayout(LAYOUT_KEYS[key])
     renderLayout()

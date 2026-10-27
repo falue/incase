@@ -4,7 +4,7 @@ import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import { booleanOpDWithPolyTree, ClipType, FillRule, PolyTreeD, type PolyPathD } from 'clipper2-ts'
-import { caseSection, roundedRect, stackTotal, type Layer } from './geometry'
+import { caseSection, resting, roundedRect, stackTotal, type Layer } from './geometry'
 import { itemHeight, type CaseDims, type Item, type Project } from './model'
 
 // Plan (x, y) maps to three (x, z); y = 0 is the case top, the case floor is at y = -depth.
@@ -12,6 +12,8 @@ import { itemHeight, type CaseDims, type Item, type Project } from './model'
 const PER_CORNER = 8 // arc segments per corner of the case shell
 const CASE_LINE = 2.5 // px
 const FAR = 1e5 // mm, stands in for an open section side
+const FIT_MARGIN = 1.1
+const HIGHLIGHT = '#3d8bff' // current layer
 
 function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
   for (let i = 0; i < node.count; i++) {
@@ -26,16 +28,20 @@ function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
   }
 }
 
-/** `top` is the three y of the foam top the item hangs from. */
-function ghost(it: Item, top: number, selected: boolean): THREE.Mesh {
+/** `bottom` is the three y the item stands on. */
+function ghost(it: Item, bottom: number, selected: boolean): THREE.Mesh {
   const r = it.d / 2
   const geo =
     it.shape === 'box' ? new THREE.BoxGeometry(it.l, it.h, it.w)
     : it.shape === 'cylinder' ? new THREE.CylinderGeometry(r, r, it.h, 48)
     : it.shape === 'lying' ? new THREE.CylinderGeometry(r, r, it.l, 48).rotateZ(Math.PI / 2)
     : new THREE.SphereGeometry(r, 48, 24)
-  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: selected ? '#3d8bff' : '#ff9a3c', transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide }))
-  mesh.position.set(it.x, top - it.z - itemHeight(it) / 2, it.y)
+  // the polygon offset keeps its bottom face in front of the foam top it stands on (no z-fighting)
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color: selected ? '#3d8bff' : '#ff9a3c', transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
+  }))
+  mesh.position.set(it.x, bottom + itemHeight(it) / 2, it.y)
   mesh.rotation.y = (-it.rot * Math.PI) / 180
   mesh.userData.id = it.id
   return mesh
@@ -187,8 +193,9 @@ export class View3D {
     this.renderer.render(this.scene, this.camera)
   }
 
-  update(p: Project, layers: Layer[], selectedId: string | null) {
-    this.last = [p, layers, selectedId]
+  /** `current` is the layer shown in the top view; it is highlighted. */
+  update(p: Project, layers: Layer[], selectedId: string | null, current: number) {
+    this.last = [p, layers, selectedId, current]
     this.extent = { x: Math.max(p.box.topL, p.box.bottomL) / 2, y: Math.max(p.box.topW, p.box.bottomW) / 2 }
     const { x: [x0, x1], y: [y0, y1] } = this.sectionBounds()
     const sectioned = [x0, x1, y0, y1].some(Number.isFinite)
@@ -220,15 +227,17 @@ export class View3D {
       const geo = new THREE.ExtrudeGeometry(shapes, { depth: layer.b - layer.a, bevelEnabled: false })
       geo.rotateX(Math.PI / 2).translate(0, -(foamTop + layer.a) + shift(layer.index), 0)
       const color = new THREE.Color(layer.material.color).lerp(new THREE.Color('#fff'), 0.35)
+      const highlight = layer.index === current
       this.content.add(
-        new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9 })),
-        new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: '#222' })),
+        new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9, emissive: highlight ? HIGHLIGHT : 0, emissiveIntensity: 0.45 })),
+        new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: highlight ? HIGHLIGHT : '#222' })),
       )
     }
     this.ghosts = p.items.map(it => {
-      // the item moves with the layer its top lies in
-      const i = layers.findIndex(l => it.z < l.b)
-      return ghost(it, -foamTop + (layers.length ? shift(i < 0 ? layers.length - 1 : i) : 0), it.id === selectedId)
+      // the item stands on (and explodes with) the layer below its cut, or on the case floor
+      const { z, layer } = resting(p, it)
+      const bottom = layer >= 0 ? -(foamTop + layers[layer].a) + shift(layer) : -(foamTop + z + itemHeight(it))
+      return ghost(it, bottom, it.id === selectedId)
     })
     const shell = caseShell(p.box)
     for (const o of this.ghosts) (o.material as THREE.Material).clippingPlanes = planes
@@ -242,18 +251,35 @@ export class View3D {
     this.draw()
   }
 
-  /** Frames the whole case from the front-top. */
+  /** Frames the whole case from the front-right corner, so it fits both the width and the height of the view. */
   fit() {
     if (!this.box) return
-    const box = this.box
-    const size = Math.max(box.topL, box.topW, box.depth)
-    this.viewHeight = size * 1.3
+    const b = this.box
+    const L = Math.max(b.topL, b.bottomL), W = Math.max(b.topW, b.bottomW)
+    const target = new THREE.Vector3(0, -b.depth / 2, 0)
+    // seen from the front-right corner: 45° around the vertical axis, ~40° above the horizon
+    const dir = new THREE.Vector3(1.1 * Math.SQRT1_2, 0.9, 1.1 * Math.SQRT1_2).normalize()
+    const o = this.orthographic
+    o.position.copy(target).addScaledVector(dir, Math.max(L, W, b.depth) * 2)
+    o.lookAt(target)
+    o.updateMatrixWorld()
+    // half extents of the case box as seen from the camera
+    let halfW = 0, halfH = 0
+    for (const x of [-L / 2, L / 2]) for (const y of [0, -b.depth]) for (const z of [-W / 2, W / 2]) {
+      const v = new THREE.Vector3(x, y, z).applyMatrix4(o.matrixWorldInverse)
+      halfW = Math.max(halfW, Math.abs(v.x))
+      halfH = Math.max(halfH, Math.abs(v.y))
+    }
     const { clientWidth: w, clientHeight: h } = this.host
-    this.updateFrustums(h ? w / h : 1)
-    for (const cam of [this.perspective, this.orthographic]) cam.position.set(0, size * 0.9, size * 1.1)
-    this.orthographic.zoom = 1
-    this.orthographic.updateProjectionMatrix()
-    this.controls.target.set(0, -box.depth / 2, 0)
+    const aspect = h ? w / h : 1
+    this.viewHeight = 2 * Math.max(halfH, halfW / aspect) * FIT_MARGIN
+    this.updateFrustums(aspect)
+    o.zoom = 1
+    o.updateProjectionMatrix()
+    // perspective: same direction, far enough that the same height fits (near corners appear larger, hence the margin)
+    const dist = (this.viewHeight * FIT_MARGIN) / (2 * Math.tan(THREE.MathUtils.degToRad(this.perspective.fov / 2)))
+    this.perspective.position.copy(target).addScaledVector(dir, dist)
+    this.controls.target.copy(target)
     this.controls.update()
     this.draw()
   }

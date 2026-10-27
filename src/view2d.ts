@@ -1,6 +1,6 @@
 import { FillRule, unionD } from 'clipper2-ts'
 import { AREA_TOL, caseOutline, itemCuts, offset, pathData, place, type Layer } from './geometry'
-import { itemSize, type Item, type Project } from './model'
+import { itemSize, perimeterParam, perimeterPoint, type Item, type Project } from './model'
 
 const NS = 'http://www.w3.org/2000/svg'
 const MARGIN = 30
@@ -25,10 +25,11 @@ export interface View2DHost {
 type Drag =
   | { mode: 'move'; item: Item; dx: number; dy: number }
   | { mode: 'rotate'; item: Item }
+  | { mode: 'notch'; item: Item; index: number }
   | { mode: 'pan'; x: number; y: number; cx: number; cy: number; scale: number }
 
 /**
- * Top view: drag items to move, drag the handle to rotate (Shift snaps to 15°), hover a line for what it is.
+ * Top view: drag items to move, drag the handle to rotate (Shift snaps to 15°); lines carry hover help (data-tip).
  * Wheel zooms at the pointer, dragging the background (or with the middle button) pans, double-click resets the view.
  */
 export class View2D {
@@ -38,7 +39,6 @@ export class View2D {
   /** Refuse moves that make an item's safe-zone violation worse (so items in conflict can still be pulled out). */
   constrain = false
   private svg = document.createElementNS(NS, 'svg')
-  private tooltip = Object.assign(document.createElement('div'), { className: 'tooltip', hidden: true })
   private items: Item[] = []
   private selected: Item | null = null
   private drag: Drag | null = null
@@ -46,16 +46,12 @@ export class View2D {
   private center = { x: 0, y: 0 }
   private last: Parameters<View2D['render']> | null = null
 
-  constructor(private host: HTMLElement, private ctl: View2DHost) {
-    host.append(this.svg, this.tooltip)
+  constructor(host: HTMLElement, private ctl: View2DHost) {
+    host.append(this.svg)
     this.svg.addEventListener('pointerdown', e => this.down(e))
-    this.svg.addEventListener('pointermove', e => {
-      this.move(e)
-      this.hover(e)
-    })
+    this.svg.addEventListener('pointermove', e => this.move(e))
     this.svg.addEventListener('pointerup', () => (this.drag = null))
     this.svg.addEventListener('pointercancel', () => (this.drag = null))
-    this.svg.addEventListener('pointerleave', () => (this.tooltip.hidden = true))
     this.svg.addEventListener('wheel', e => this.zoomAt(e), { passive: false })
     this.svg.addEventListener('dblclick', e => {
       if ((e.target as Element).closest('[data-id], [data-role]')) return
@@ -65,8 +61,10 @@ export class View2D {
     })
   }
 
-  render(p: Project, selectedId: string | null, layer: Layer | null, conflicts: Set<string>) {
-    this.last = [p, selectedId, layer, conflicts]
+  /** Shows the cut lines of `layers[index]`, its neighbours faint. */
+  render(p: Project, selectedId: string | null, layers: Layer[], index: number, conflicts: Set<string>) {
+    this.last = [p, selectedId, layers, index, conflicts]
+    const layer = layers[index]
     const b = p.box
     const w = (Math.max(b.topL, b.bottomL) + 2 * MARGIN) / this.zoom
     const h = (Math.max(b.topW, b.bottomW) + 2 * MARGIN) / this.zoom
@@ -98,6 +96,9 @@ export class View2D {
           hit(d, `Safe zone of ${it.name} (${this.ctl.len(b.safeZone)}): other cuts and the wall must stay outside${conflict ? ' · VIOLATED' : ''}`))
       })
     }
+    for (const [l, where] of [[layers[index - 1], 'above'], [layers[index + 1], 'below']] as const) {
+      if (l) parts.push(`<path class="layer faint" stroke="${l.material.color}" d="${pathData(l.paths)}"/>`, hit(pathData(l.paths), `Layer ${l.index + 1} (${where}) · ${l.material.name}`))
+    }
     const layerPaths = layer ? pathData(layer.paths) : ''
     if (layer) parts.push(hit(layerPaths, `Layer ${layer.index + 1} cut lines · ${layer.material.name}`))
     p.items.forEach((it, i) => {
@@ -111,6 +112,10 @@ export class View2D {
       const h = this.handle(it, b.clearance)
       parts.push(`<line class="handle-line" x1="${it.x}" y1="${it.y}" x2="${h.x}" y2="${h.y}"/>`,
         `<circle data-role="rotate" data-tip="Drag to rotate · Shift snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="4"/>`)
+      it.notches.forEach((n, i) => {
+        const c = place([perimeterPoint(it, n.t)], it)[0]
+        parts.push(`<circle data-role="notch" data-index="${i}" data-tip="Finger notch · drag along the edge" class="handle notch" cx="${c.x}" cy="${c.y}" r="3"/>`)
+      })
     }
     this.svg.innerHTML = parts.join('')
   }
@@ -137,26 +142,18 @@ export class View2D {
     this.rerender()
   }
 
-  private hover(e: PointerEvent) {
-    const tip = this.drag ? null : (e.target as Element).closest('[data-tip]')?.getAttribute('data-tip')
-    this.tooltip.hidden = !tip
-    if (!tip) return
-    const r = this.host.getBoundingClientRect()
-    this.tooltip.textContent = tip
-    this.tooltip.style.left = `${e.clientX - r.left + 14}px`
-    this.tooltip.style.top = `${e.clientY - r.top + 14}px`
-  }
-
   private down(e: PointerEvent) {
     const target = e.target as Element
     const id = target.closest('[data-id]')?.getAttribute('data-id') ?? null
-    const rotate = target.getAttribute('data-role') === 'rotate'
-    if (e.button === 1 || (!id && !rotate)) {
+    const role = target.getAttribute('data-role')
+    if (e.button === 1 || (!id && !role)) {
       e.preventDefault()
       if (e.button !== 1) this.ctl.select(null)
       this.drag = { mode: 'pan', x: e.clientX, y: e.clientY, cx: this.center.x, cy: this.center.y, scale: 1 / this.svg.getScreenCTM()!.a }
-    } else if (rotate && this.selected) {
+    } else if (role === 'rotate' && this.selected) {
       this.drag = { mode: 'rotate', item: this.selected }
+    } else if (role === 'notch' && this.selected) {
+      this.drag = { mode: 'notch', item: this.selected, index: Number(target.getAttribute('data-index')) }
     } else {
       const item = this.items.find(it => it.id === id)!
       const p = this.point(e)
@@ -174,6 +171,13 @@ export class View2D {
       return this.rerender()
     }
     const p = this.point(e), it = d.item
+    if (d.mode === 'notch') {
+      // pointer in the item's local frame, projected onto its outline
+      const a = (it.rot * Math.PI) / 180, dx = p.x - it.x, dy = p.y - it.y
+      const t = perimeterParam(it, dx * Math.cos(a) + dy * Math.sin(a), -dx * Math.sin(a) + dy * Math.cos(a))
+      Object.assign(it.notches[d.index], { t, manual: true })
+      return this.ctl.change()
+    }
     const before = this.constrain ? this.ctl.violation(it) : 0
     // applies a placement and keeps it unless it makes the violation worse
     const attempt = (apply: () => void) => {

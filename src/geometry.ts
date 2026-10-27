@@ -1,5 +1,5 @@
 import { areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
-import { itemHeight, type CaseDims, type Item, type Material, type Project } from './model'
+import { itemHeight, perimeterPoint, type CaseDims, type Item, type Material, type Project } from './model'
 
 const TOL = 0.02 // max chord deviation of arcs in mm
 const EPS = 1e-6
@@ -38,29 +38,34 @@ export function place(path: PathD, it: Item): PathD {
   return path.map((p: PointD) => ({ x: it.x + p.x * c - p.y * s, y: it.y + p.x * s + p.y * c }))
 }
 
-/** Cutouts of an item (incl. notches) for the foam slab starting at depth a (from the foam top).
- * Every slab from the foam top down to the item's bottom is cut, so the item can be lifted out. */
-export function itemCuts(it: Item, a: number, globalClearance: number): PathsD {
+/** Cutouts of an item (incl. notches) for the foam slab starting at depth a (from the foam top), with the item's top
+ * at depth `z` (see resting). Every slab from the foam top down to the item's bottom is cut, so it can be lifted out. */
+export function itemCuts(it: Item, a: number, globalClearance: number, z = it.z): PathsD {
   const c = it.clearance ?? globalClearance
   const out: PathsD = []
-  if (a < it.z + itemHeight(it) - EPS) {
+  if (a < z + itemHeight(it) - EPS) {
     let shape: PathD | null
     if (it.shape === 'box') shape = roundedRect(it.l + 2 * c, it.w + 2 * c, it.r + c)
     else if (it.shape === 'cylinder') shape = circle(it.d / 2 + c)
     else {
       // full width above the centre, below it the widest section is at the slab top
       const r = it.d / 2
-      const dz = Math.max(0, a - (it.z + r))
+      const dz = Math.max(0, a - (z + r))
       const half = Math.sqrt(Math.max(0, r * r - dz * dz))
       shape = it.shape === 'sphere' ? circle(half + c) : roundedRect(it.l + 2 * c, 2 * (half + c), 0)
     }
     if (shape) out.push(shape)
   }
-  for (const n of it.notches) {
-    const s = a < n.depth - EPS ? circle(n.d / 2) : null
-    if (s) out.push(translate(s, n.dx, n.dy))
+  const notch = a < it.notchDepth - EPS && it.notches.length ? circle(it.notchD / 2) : null
+  if (notch) {
+    for (const n of it.notches) {
+      const c = perimeterPoint(it, n.t)
+      out.push(translate(notch, c.x, c.y))
+    }
   }
-  return out.map(p => place(p, it))
+  const placed = out.map(p => place(p, it))
+  // grow then shrink: rounds the inner corners where notches meet the body or each other, keeps outer corners
+  return notch && it.notchR > 0 ? offset(offset(placed, it.notchR), -it.notchR) : placed
 }
 
 const sizeAt = (box: CaseDims, z: number) => {
@@ -91,6 +96,22 @@ export const stackTotal = (p: Project) => p.stack.reduce((sum, id) => sum + (p.m
 /** Grows (+) or shrinks (−) shapes by `delta` with round corners. */
 export const offset = (paths: PathsD, delta: number) => inflatePathsD(paths, delta, JoinType.Round, EndType.Polygon)
 
+/**
+ * Where an item really sits: its cut ends on a layer boundary, so it sinks onto the layer below its cut.
+ * Returns its top depth (from the foam top) and the index of the layer it rests on (-1 = the case floor).
+ * Items reaching below the stack keep their z.
+ */
+export function resting(p: Project, it: Item): { z: number; layer: number } {
+  const h = itemHeight(it)
+  const thickness = p.stack.map(id => p.materials.find(m => m.id === id)?.thickness ?? 0)
+  let b = 0
+  for (let i = 0; i < thickness.length; i++) {
+    b += thickness[i]
+    if (b >= it.z + h - EPS) return { z: b - h, layer: i + 1 < thickness.length ? i + 1 : -1 }
+  }
+  return { z: it.z, layer: -1 }
+}
+
 export interface Layer {
   index: number
   material: Material
@@ -118,7 +139,7 @@ export function computeLayers(p: Project): Layer[] {
   return slabs(p).map(({ material, a, b, outline }, index) => {
     const tree = new PolyTreeD()
     if (outline) {
-      const cuts = p.items.flatMap(it => itemCuts(it, a, p.box.clearance))
+      const cuts = p.items.flatMap(it => itemCuts(it, a, p.box.clearance, resting(p, it).z))
       booleanOpDWithPolyTree(ClipType.Difference, [outline], cuts, tree, FillRule.NonZero, 3)
     }
     return { index, material, a, b, tree, paths: polyTreeToPathsD(tree) }
@@ -135,8 +156,9 @@ export function safeZoneViolations(p: Project, only?: Item): Map<string, number>
   const s = Math.max(p.box.safeZone, 0)
   const result = new Map<string, number>()
   const area = (paths: PathsD) => Math.abs(areaPathsD(paths))
+  const zs = p.items.map(it => resting(p, it).z)
   for (const { a, outline } of slabs(p)) {
-    const cuts = p.items.map(it => itemCuts(it, a, p.box.clearance))
+    const cuts = p.items.map((it, i) => itemCuts(it, a, p.box.clearance, zs[i]))
     const inner = outline ? (s ? offset([outline], -s) : [outline]) : []
     p.items.forEach((it, i) => {
       if (!cuts[i].length || (only && it !== only)) return

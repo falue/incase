@@ -1,4 +1,5 @@
-import { offset, pathData, type Layer } from './geometry'
+import { curveData } from './curves'
+import { offset, type Layer } from './geometry'
 import type { Project } from './model'
 
 const GAP = 10
@@ -21,7 +22,7 @@ export function exportSvg(p: Project, layers: Layer[]): string {
     const x0 = MARGIN + i * (L + GAP)
     const { name, thickness, color } = layer.material
     const paths = p.kerf > 0 ? offset(layer.paths, p.kerf / 2) : layer.paths
-    cuts.push(`<path stroke="${color}" d="${pathData(paths, x0 + L / 2, MARGIN + W / 2)}"/>`)
+    cuts.push(`<path stroke="${color}" d="${curveData(paths, x0 + L / 2, MARGIN + W / 2)}"/>`)
     labels.push(`<text x="${x0}" y="${MARGIN + W + 4 + FONT}">${esc(`${i + 1} · ${name} · ${thickness} mm`)}</text>`)
   })
   return `<?xml version="1.0" encoding="UTF-8"?>
