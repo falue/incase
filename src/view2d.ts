@@ -1,5 +1,5 @@
 import { FillRule, unionD } from 'clipper2-ts'
-import { caseOutline, itemCuts, pathData, place, type Layer } from './geometry'
+import { caseOutline, itemCuts, offset, pathData, place, type Layer } from './geometry'
 import { itemSize, type Item, type Project } from './model'
 
 const NS = 'http://www.w3.org/2000/svg'
@@ -21,7 +21,7 @@ export class View2D {
     this.svg.addEventListener('pointercancel', () => (this.drag = null))
   }
 
-  render(p: Project, selectedId: string | null, layer: Layer | null) {
+  render(p: Project, selectedId: string | null, layer: Layer | null, conflicts: Set<string>) {
     const b = p.box
     const L = Math.max(b.topL, b.bottomL), W = Math.max(b.topW, b.bottomW)
     this.svg.setAttribute('viewBox', `${-L / 2 - MARGIN} ${-W / 2 - MARGIN} ${L + 2 * MARGIN} ${W + 2 * MARGIN}`)
@@ -35,8 +35,11 @@ export class View2D {
       `<path class="case-bottom" d="${outline(b.depth)}"/>`,
       `<path class="case" d="${outline(0)}"/>`,
     ]
+    const top = caseOutline(b, 0, 0)
+    if (b.safeZone > 0 && top) parts.push(`<path class="zone" d="${pathData(offset([top], -b.safeZone))}"/>`)
     for (const it of p.items) {
-      const footprint = unionD(itemCuts(it, -Infinity, Infinity, b.clearance), FillRule.NonZero)
+      const footprint = unionD(itemCuts(it, -Infinity, b.clearance), FillRule.NonZero)
+      if (b.safeZone > 0) parts.push(`<path class="zone${conflicts.has(it.id) ? ' conflict' : ''}" d="${pathData(offset(footprint, b.safeZone))}"/>`)
       parts.push(`<path data-id="${it.id}" class="item${it === this.selected ? ' selected' : ''}" d="${pathData(footprint)}"/>`)
     }
     if (layer) parts.push(`<path class="layer" stroke="${layer.material.color}" d="${pathData(layer.paths)}"/>`)

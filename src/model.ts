@@ -27,6 +27,8 @@ export interface CaseDims {
   radius: number
   bottomRadius: number
   clearance: number
+  /** Minimum foam between any two cuts and between cuts and the case wall. */
+  safeZone: number
 }
 
 export interface Project {
@@ -95,7 +97,7 @@ function defaultProject(): Project {
   const camera = { ...defaultItem('box', 'Camera', 0), l: 130, w: 80, h: 60, r: 8 }
   camera.notches.push(defaultNotch(camera))
   return {
-    box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, clearance: 1 },
+    box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, clearance: 1, safeZone: 5 },
     materials,
     stack: suggestStack(materials, 80),
     stackAuto: true,
@@ -104,11 +106,18 @@ function defaultProject(): Project {
   }
 }
 
+/** Parses a saved project, filling fields added in later versions. */
+export function parseProject(json: string): Project {
+  const p: Project = JSON.parse(json)
+  p.box.safeZone ??= 5
+  return p
+}
+
 export function loadProject(): Project {
   const raw = localStorage.getItem(KEY)
   if (raw) {
     try {
-      return JSON.parse(raw)
+      return parseProject(raw)
     } catch {
       // corrupt storage: fall back to defaults
     }

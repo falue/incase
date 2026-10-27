@@ -1,4 +1,4 @@
-import { booleanOpDWithPolyTree, ClipType, FillRule, PolyTreeD, polyTreeToPathsD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
+import { areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
 import { itemHeight, type CaseDims, type Item, type Material, type Project } from './model'
 
 const TOL = 0.02 // max chord deviation of arcs in mm
@@ -13,12 +13,13 @@ export function circle(r: number): PathD | null {
   return Array.from({ length: n }, (_, i) => ({ x: r * Math.cos((2 * Math.PI * i) / n), y: r * Math.sin((2 * Math.PI * i) / n) }))
 }
 
-export function roundedRect(l: number, w: number, r: number): PathD | null {
+/** `perCorner` fixes the arc segment count (for lofting); by default it follows the chord tolerance. */
+export function roundedRect(l: number, w: number, r: number, perCorner?: number): PathD | null {
   const hx = l / 2, hy = w / 2
   if (hx <= 0 || hy <= 0) return null
   r = Math.min(Math.max(r, 0), hx, hy)
   const corners = [[hx - r, hy - r], [-hx + r, hy - r], [-hx + r, -hy + r], [hx - r, -hy + r]]
-  const n = r < TOL ? 0 : segments(r, Math.PI / 2)
+  const n = perCorner ?? (r < TOL ? 0 : segments(r, Math.PI / 2))
   const path: PathD = []
   corners.forEach(([cx, cy], k) => {
     for (let i = 0; i <= n; i++) {
@@ -37,19 +38,19 @@ export function place(path: PathD, it: Item): PathD {
   return path.map((p: PointD) => ({ x: it.x + p.x * c - p.y * s, y: it.y + p.x * s + p.y * c }))
 }
 
-/** Cutouts of an item (incl. notches) for the foam slab between depths a and b (from the top). */
-export function itemCuts(it: Item, a: number, b: number, globalClearance: number): PathsD {
+/** Cutouts of an item (incl. notches) for the foam slab starting at depth a (from the foam top).
+ * Every slab from the foam top down to the item's bottom is cut, so the item can be lifted out. */
+export function itemCuts(it: Item, a: number, globalClearance: number): PathsD {
   const c = it.clearance ?? globalClearance
-  const top = it.z
   const out: PathsD = []
-  if (top < b - EPS && top + itemHeight(it) > a + EPS) {
+  if (a < it.z + itemHeight(it) - EPS) {
     let shape: PathD | null
     if (it.shape === 'box') shape = roundedRect(it.l + 2 * c, it.w + 2 * c, it.r + c)
     else if (it.shape === 'cylinder') shape = circle(it.d / 2 + c)
     else {
-      // widest cross-section within the slab
-      const r = it.d / 2, zc = top + r
-      const dz = Math.min(Math.max(zc, a), b) - zc
+      // full width above the centre, below it the widest section is at the slab top
+      const r = it.d / 2
+      const dz = Math.max(0, a - (it.z + r))
       const half = Math.sqrt(Math.max(0, r * r - dz * dz))
       shape = it.shape === 'sphere' ? circle(half + c) : roundedRect(it.l + 2 * c, 2 * (half + c), 0)
     }
@@ -62,18 +63,33 @@ export function itemCuts(it: Item, a: number, b: number, globalClearance: number
   return out.map(p => place(p, it))
 }
 
-/** Case cavity outline for the slab between a and b: the narrowest section of the slab (taper + bottom edge radius). */
-export function caseOutline(box: CaseDims, a: number, b: number): PathD | null {
-  const lerp = (top: number, bottom: number, z: number) => {
-    const t = box.depth > 0 ? Math.min(Math.max(z / box.depth, 0), 1) : 0
-    return top + (bottom - top) * t
-  }
-  const R = box.bottomRadius, d = Math.max(0, box.depth - b)
-  const inset = d < R ? R - Math.sqrt(R * R - (R - d) ** 2) : 0
-  const l = Math.min(lerp(box.topL, box.bottomL, a), lerp(box.topL, box.bottomL, b))
-  const w = Math.min(lerp(box.topW, box.bottomW, a), lerp(box.topW, box.bottomW, b))
-  return roundedRect(l - 2 * inset, w - 2 * inset, box.radius - inset)
+const sizeAt = (box: CaseDims, z: number) => {
+  const t = box.depth > 0 ? Math.min(Math.max(z / box.depth, 0), 1) : 0
+  return [box.topL + (box.bottomL - box.topL) * t, box.topW + (box.bottomW - box.topW) * t]
 }
+
+/** How far the bottom edge radius pulls the wall inwards at depth z (from the case top). */
+const insetAt = (box: CaseDims, z: number) => {
+  const R = box.bottomRadius, d = Math.max(0, box.depth - z)
+  return d < R ? R - Math.sqrt(R * R - (R - d) ** 2) : 0
+}
+
+/** Cavity cross-section at depth z (from the case top). */
+export function caseSection(box: CaseDims, z: number) {
+  const [l, w] = sizeAt(box, z), inset = insetAt(box, z)
+  return { l: l - 2 * inset, w: w - 2 * inset, r: box.radius - inset }
+}
+
+/** Case cavity outline for the slab between a and b (from the case top): the narrowest section of the slab. */
+export function caseOutline(box: CaseDims, a: number, b: number): PathD | null {
+  const [la, wa] = sizeAt(box, a), [lb, wb] = sizeAt(box, b), inset = insetAt(box, b)
+  return roundedRect(Math.min(la, lb) - 2 * inset, Math.min(wa, wb) - 2 * inset, box.radius - inset)
+}
+
+export const stackTotal = (p: Project) => p.stack.reduce((sum, id) => sum + (p.materials.find(m => m.id === id)?.thickness ?? 0), 0)
+
+/** Grows (+) or shrinks (−) shapes by `delta` with round corners. */
+export const offset = (paths: PathsD, delta: number) => inflatePathsD(paths, delta, JoinType.Round, EndType.Polygon)
 
 export interface Layer {
   index: number
@@ -84,23 +100,51 @@ export interface Layer {
   paths: PathsD
 }
 
-export function computeLayers(p: Project): Layer[] {
-  const layers: Layer[] = []
+/** Foam slabs top → bottom; a and b are measured from the foam top, the stack rests on the case floor. */
+function slabs(p: Project) {
+  const foamTop = p.box.depth - stackTotal(p)
   let a = 0
-  for (const id of p.stack) {
+  return p.stack.flatMap(id => {
     const material = p.materials.find(m => m.id === id)
-    if (!material) continue
+    if (!material) return []
     const b = a + material.thickness
-    const outline = caseOutline(p.box, a, b)
+    const slab = { material, a, b, outline: caseOutline(p.box, foamTop + a, foamTop + b) }
+    a = b
+    return [slab]
+  })
+}
+
+export function computeLayers(p: Project): Layer[] {
+  return slabs(p).map(({ material, a, b, outline }, index) => {
     const tree = new PolyTreeD()
     if (outline) {
-      const cuts = p.items.flatMap(it => itemCuts(it, a, b, p.box.clearance))
+      const cuts = p.items.flatMap(it => itemCuts(it, a, p.box.clearance))
       booleanOpDWithPolyTree(ClipType.Difference, [outline], cuts, tree, FillRule.NonZero, 3)
     }
-    layers.push({ index: layers.length, material, a, b, tree, paths: polyTreeToPathsD(tree) })
-    a = b
+    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree) }
+  })
+}
+
+const AREA_TOL = 0.01 // mm², ignores rounding slivers
+
+/** Ids of items whose cuts come closer than the safe zone to another item's cuts or to the case wall, in any layer. */
+export function safeZoneConflicts(p: Project): Set<string> {
+  const s = p.box.safeZone
+  const conflicts = new Set<string>()
+  if (s <= 0) return conflicts
+  for (const { a, outline } of slabs(p)) {
+    const cuts = p.items.map(it => itemCuts(it, a, p.box.clearance))
+    const inner = outline ? offset([outline], -s) : []
+    p.items.forEach((it, i) => {
+      if (!cuts[i].length) return
+      if (Math.abs(areaPathsD(differenceD(cuts[i], inner, FillRule.NonZero))) > AREA_TOL) conflicts.add(it.id)
+      const zone = offset(cuts[i], s)
+      cuts.forEach((other, j) => {
+        if (j !== i && other.length && Math.abs(areaPathsD(intersectD(zone, other, FillRule.NonZero))) > AREA_TOL) conflicts.add(it.id)
+      })
+    })
   }
-  return layers
+  return conflicts
 }
 
 export const pathData = (paths: PathsD, dx = 0, dy = 0) =>

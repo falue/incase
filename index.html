@@ -6,30 +6,47 @@
     <title>incase</title>
   </head>
   <body>
-    <aside id="sidebar">
-      <h1>incase <button id="theme" title="Toggle dark / light mode">◐</button></h1>
-      <ul id="warnings"></ul>
-      <section><h2>Case (inner)</h2><div id="case" class="grid"></div></section>
-      <section><h2>Materials <small>order = preference</small></h2><div id="materials"></div></section>
-      <section><h2>Stack <small>top → bottom</small></h2><div id="stack"></div></section>
-      <section><h2>Objects</h2><div id="items"></div></section>
-      <section id="selection-section"><h2>Selected object</h2><div id="selection"></div></section>
-      <section><h2>Export</h2><div id="export"></div></section>
-    </aside>
-    <main>
-      <div class="pane">
-        <header>
-          Top view
-          <select id="layer-select"></select>
-          <span class="hint">drag = move · handle = rotate (Shift snaps 15°) · arrows nudge · Del · ⌘/Ctrl+D</span>
-        </header>
+    <header id="topbar">
+      <span class="brand">incase</span>
+      <div class="seg" id="layout"></div>
+      <span class="spacer"></span>
+      <button id="save" title="Save project as JSON">Save</button>
+      <button id="load" title="Load project JSON">Load</button>
+      <button id="export-svg" class="primary" title="Export all layers as one SVG (mm)">Export SVG</button>
+      <div class="seg" id="units"></div>
+      <button id="theme" class="icon" title="Toggle dark / light">◐</button>
+    </header>
+
+    <nav id="toolbar"></nav>
+
+    <main id="viewports">
+      <div class="pane" id="pane2d">
         <div id="view2d" class="view"></div>
+        <div class="overlay top-left"><span class="tag">Top</span><select id="layer-select" title="Overlay the cut lines of one layer"></select></div>
       </div>
-      <div class="pane">
-        <header>3D preview <label class="hint">explode <input id="explode" type="range" min="0" max="40" value="0" /></label></header>
+      <div class="splitter" id="splitter" title="Drag to resize · double-click to reset"></div>
+      <div class="pane" id="pane3d">
         <div id="view3d" class="view"></div>
+        <div class="overlay top-left"><span class="tag">3D</span></div>
+        <div class="overlay top-right"><div class="seg" id="camera"></div></div>
+        <div class="overlay bottom-left sections" title="Double-click a slider to reset">
+          <label>Explode <input id="explode" type="range" min="0" max="40" value="0" /></label>
+          <label>X <span class="dual" id="section-x"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span></label>
+          <label>Y <span class="dual" id="section-y"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span></label>
+        </div>
       </div>
     </main>
+
+    <aside id="panel">
+      <details open><summary>Objects</summary><div id="items" class="outliner"></div></details>
+      <details open id="selection-section"><summary>Selected</summary><div id="selection"></div></details>
+      <details open><summary>Case</summary><div id="case" class="props"></div></details>
+      <details open><summary>Materials <small>order = preference</small></summary><div id="materials"></div></details>
+      <details open><summary>Stack <small>top → bottom</small></summary><div id="stack"></div></details>
+    </aside>
+
+    <footer id="statusbar"><span id="hint"></span><span id="warnings"></span></footer>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
