@@ -90,6 +90,7 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 /* shares the page columns so the layout switch sits above the viewports */
 #topbar { grid-area: top; display: grid; grid-template-columns: subgrid; align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); }
 .brand { padding: 0 10px; font-weight: 700; letter-spacing: 0.02em; }
+
 #topbar .bar { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; padding: 0 10px; }
 .spacer { flex: 1; }
 
@@ -136,7 +137,13 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 
 /* side panels: global settings left, object settings right */
 #global, #objects { overflow-y: auto; background: var(--panel); }
-#global { grid-area: global; border-right: 1px solid var(--line); }
+#global { grid-area: global; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+/* pushed to the bottom of the left column */
+.links { margin-top: auto; display: flex; gap: 12px; padding: 10px; font-size: 11px; }
+.links { align-items: center; }
+.links a { display: inline-flex; align-items: center; color: var(--muted); text-decoration: none; }
+.links svg { width: 16px; height: 16px; fill: currentColor; }
+.links a:hover { color: var(--accent); }
 #objects { grid-area: objects; border-left: 1px solid var(--line); }
 details { border-bottom: 1px solid var(--line); }
 details > div { padding: 0 10px 10px; }
