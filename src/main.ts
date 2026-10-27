@@ -458,7 +458,7 @@ function renderStack() {
   )
   $('stack').replaceChildren(
     ...rows,
-    button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id))),
+    ...(project.stackAuto ? [] : [button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id)))]),
   )
 }
 
