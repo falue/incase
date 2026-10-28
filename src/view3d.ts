@@ -15,7 +15,7 @@ const FAR = 1e5 // mm, stands in for an open section side
 const FIT_MARGIN = 1.1
 const CUBE = 56 // px, view cube edge
 const TURN_MS = 300 // view cube camera turn
-const HIGHLIGHT = '#3d8bff' // current layer
+const CURRENT_LINE = 5 // px, edges of the current layer
 const SHELL = '#7f8fa3' // case and lid
 const OBJECT = '#ff9a3c'
 const LID_HIT = '#ff2a2a' // part of an object above the closed lid
@@ -115,6 +115,7 @@ function lidShell(box: CaseDims) {
 export class View3D {
   /** Extra vertical gap between layers in mm; the bottom layer stays on the floor. */
   explode = 0
+  private accent = '#3d8bff' // set by setTheme
   private renderer = new THREE.WebGLRenderer({ antialias: true })
   private scene = new THREE.Scene()
   private perspective = new THREE.PerspectiveCamera(35, 1, 1, 50000)
@@ -127,6 +128,7 @@ export class View3D {
   private sections = { x: [0, 1], y: [0, 1] }
   private extent = { x: 0, y: 0 } // half case size per plan axis
   private ghosts: THREE.Mesh[] = []
+  private slabs: THREE.Mesh[] = []
   private box: CaseDims | null = null
   private last: Parameters<View3D['update']> | null = null
 
@@ -135,13 +137,16 @@ export class View3D {
   private cube = document.createElement('div')
   private cubeWrap = document.createElement('div')
 
-  /** `onProjection` is called when the camera switches between orthographic and perspective on its own. */
-  constructor(private host: HTMLElement, onSelect: (id: string | null) => void, private onProjection: () => void) {
+  /**
+   * `onProjection` is called when the camera switches between orthographic and perspective on its own,
+   * `onLayer` when a foam layer is clicked.
+   */
+  constructor(private host: HTMLElement, onSelect: (id: string | null) => void, private onProjection: () => void, onLayer: (index: number) => void) {
     this.renderer.setPixelRatio(devicePixelRatio)
     this.renderer.localClippingEnabled = true
     const canvas = this.renderer.domElement
     host.append(canvas, this.viewCube())
-    // a click without dragging selects the object under the pointer
+    // a click without dragging selects the object under the pointer, or shows the clicked layer
     let down = { x: 0, y: 0 }
     canvas.addEventListener('pointerdown', e => (down = { x: e.clientX, y: e.clientY }))
     canvas.addEventListener('pointermove', e => {
@@ -154,7 +159,9 @@ export class View3D {
       const r = canvas.getBoundingClientRect()
       const ray = new THREE.Raycaster()
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera)
-      onSelect(ray.intersectObjects(this.ghosts)[0]?.object.userData.id ?? null)
+      const hit = ray.intersectObjects([...this.ghosts, ...this.slabs])[0]?.object.userData
+      if (hit?.layer !== undefined) onLayer(hit.layer)
+      else onSelect(hit?.id ?? null)
     })
     const sun = new THREE.DirectionalLight(0xffffff, 2)
     sun.position.set(300, 800, 500)
@@ -202,9 +209,12 @@ export class View3D {
     return { x: range('x'), y: range('y') }
   }
 
-  setBackground(color: string) {
-    this.scene.background = new THREE.Color(color)
-    this.draw()
+  /** Theme colours: the view background and the accent of the current layer and the selected object. */
+  setTheme(background: string, accent: string) {
+    this.scene.background = new THREE.Color(background)
+    this.accent = accent
+    if (this.last) this.update(...this.last)
+    else this.draw()
   }
 
   private resize() {
@@ -318,6 +328,7 @@ export class View3D {
 
     const foamTop = p.box.depth - stackTotal(p)
     const shift = (i: number) => (layers.length - 1 - i) * this.explode
+    this.slabs = []
     for (const layer of layers) {
       let tree = layer.tree
       if (sectioned) {
@@ -329,18 +340,24 @@ export class View3D {
       const geo = new THREE.ExtrudeGeometry(shapes, { depth: layer.b - layer.a, bevelEnabled: false })
       geo.rotateX(Math.PI / 2).translate(0, -(foamTop + layer.a) + shift(layer.index), 0)
       const color = new THREE.Color(layer.material.color).lerp(new THREE.Color('#fff'), 0.35)
-      const highlight = layer.index === current
+      const edges = new THREE.EdgesGeometry(geo, 30)
+      const slab = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9 }))
+      slab.userData.layer = layer.index
+      this.slabs.push(slab)
       this.content.add(
-        new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9, emissive: highlight ? HIGHLIGHT : 0, emissiveIntensity: 0.45 })),
-        new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30), new THREE.LineBasicMaterial({ color: highlight ? HIGHLIGHT : '#222' })),
+        slab,
+        layer.index === current
+          ? new LineSegments2(new LineSegmentsGeometry().setPositions(edges.attributes.position.array as Float32Array), new LineMaterial({ color: this.accent, linewidth: CURRENT_LINE }))
+          : new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: '#222' })),
       )
+      if (layer.index === current) edges.dispose()
     }
     this.ghosts = p.items.flatMap(it => {
       // the item stands on (and explodes with) the layer below its cut, or on the case floor
       const { z, layer } = resting(p, it)
       const h = itemHeight(it)
       const bottom = layer >= 0 ? -(foamTop + layers[layer].a) + shift(layer) : -(foamTop + z + h)
-      const color = it.id === selectedId ? HIGHLIGHT : OBJECT
+      const color = it.id === selectedId ? this.accent : OBJECT
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
       if (excess <= 0) return [ghost(it, bottom, color, planes)]
       // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red

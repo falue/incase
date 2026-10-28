@@ -283,3 +283,17 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 }
 .cube .face:hover { color: var(--accent-text); background: var(--accent); }
 #fit-3d { width: 28px; height: 26px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+
+/* layer strip below the top view: one thumbnail per layer, the shown one framed */
+#pane2d { --strip: 100px; }
+#pane2d > .view { bottom: var(--strip); }
+.layer-nav { left: 50%; transform: translateX(-50%); bottom: calc(var(--strip) + 8px); }
+.layer-strip { position: absolute; left: 0; right: 0; bottom: 0; height: var(--strip); display: flex; gap: 6px; padding: 6px 8px; overflow: auto hidden; background: var(--panel); border-top: 1px solid var(--line); }
+/* centred while they fit, scrollable from the first one when they don't */
+.layer-strip > :first-child { margin-left: auto; }
+.layer-strip > :last-child { margin-right: auto; }
+.thumb { flex: none; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 3px; border: 2px solid transparent; background: none; color: var(--muted); }
+.thumb svg { height: 52px; background: var(--canvas); border-radius: 3px; }
+.thumb span { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.thumb.current { border-color: var(--accent); color: var(--text); }
+.thumb .piece { fill-opacity: 0.15; stroke-width: 1px; vector-effect: non-scaling-stroke; }

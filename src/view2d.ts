@@ -233,6 +233,14 @@ export class View2D {
     this.svg.innerHTML = parts.join('')
   }
 
+  /** Small SVG of one layer piece for the layer strip, framed like the unzoomed top view. */
+  thumbnail(p: Project, layer: Layer, margin = 5) {
+    const w = Math.max(p.box.topL, p.box.bottomL) + 2 * margin
+    const h = Math.max(p.box.topW, p.box.bottomW) + 2 * margin
+    const color = this.visible(layer.material.color)
+    return `<svg viewBox="${-w / 2} ${-h / 2} ${w} ${h}" style="aspect-ratio:${w}/${h}"><path class="piece" fill-rule="evenodd" fill="${color}" stroke="${color}" d="${pathData(layer.paths)}"/></svg>`
+  }
+
   /** The colour itself, or the text colour if it would vanish on the canvas (e.g. black lines in dark mode). */
   private visible(hex: string) {
     const canvas = getComputedStyle(this.svg).backgroundColor.match(/\d+/g)!.slice(0, 3).map(Number)

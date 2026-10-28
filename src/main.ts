@@ -1,6 +1,6 @@
 import './style.css'
 import type { ArrangeResult } from './arrange'
-import { AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal } from './geometry'
+import { AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal, type Layer } from './geometry'
 import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
@@ -896,7 +896,8 @@ const renderLayout = segmented($('layout'), [['top', 'Top', 'Top view only (1)']
 
 function applyTheme(theme: string) {
   document.documentElement.dataset.theme = theme
-  view3d.setBackground(getComputedStyle(document.documentElement).getPropertyValue('--view3d').trim())
+  const css = getComputedStyle(document.documentElement)
+  view3d.setTheme(css.getPropertyValue('--view3d').trim(), css.getPropertyValue('--accent').trim())
 }
 $('theme').onclick = () => {
   const theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'
@@ -932,7 +933,10 @@ function renderGridField() {
   }), 'Grid size: snap step and the grid drawn in the top view'))
 }
 let renderCamera = () => {} // the Ortho | Persp switch, set up below
-const view3d = new View3D($('view3d'), select, () => renderCamera())
+const view3d = new View3D($('view3d'), select, () => renderCamera(), i => {
+  layerIndex = i
+  scheduleViews()
+})
 applyTheme(pref('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))
 
 const splitter = $('splitter')
@@ -1055,8 +1059,30 @@ function scheduleViews() {
     layerDown.disabled = layerIndex >= layers.length - 1
     $('stack').querySelectorAll('.sortable').forEach((row, i) => row.classList.toggle('current', i === layerIndex))
     view2d.render(project, selectedId, layers, layerIndex, conflicts)
+    renderLayerStrip(layers)
     view3d.update(project, layers, selectedId, layerIndex)
   })
+}
+
+const strip = $('layer-strip')
+let stripIndex = -1 // layer the strip was last scrolled to
+
+/** Thumbnails of all layers below the top view; click one to show it, the shown one is centred when it changes. */
+function renderLayerStrip(layers: Layer[]) {
+  strip.replaceChildren(...layers.map((l, i) => {
+    const tip = `Layer ${i + 1}/${layers.length} · ${l.material.name} · ${fmtLen(l.a)}–${fmtLen(l.b)} ${unit()}`
+    const thumb = h('button', { className: 'thumb' + (i === layerIndex ? ' current' : ''), tip, innerHTML: view2d.thumbnail(project, l), onclick: () => {
+      layerIndex = i
+      scheduleViews()
+    } })
+    thumb.append(h('span', { textContent: `${i + 1} · ${l.material.name}` }))
+    return thumb
+  }))
+  const current = strip.children[layerIndex] as HTMLElement | undefined
+  if (current && stripIndex !== layerIndex) {
+    strip.scrollTo({ left: current.offsetLeft - (strip.clientWidth - current.offsetWidth) / 2, behavior: 'smooth' })
+    stripIndex = layerIndex
+  }
 }
 
 function renderAll() {

@@ -25,11 +25,13 @@
           <label class="check" data-tip="Object centres and polygon corners snap to the grid, rotation to 15°; arrow keys move one grid step"><input type="checkbox" id="snap" /> Snap to grid</label>
           <span id="grid-field" class="grid-field" hidden></span>
           <label class="check" data-tip="Moves that would push an object out of the case or closer than the min. wall are refused"><input type="checkbox" id="constrain" /> Keep clear</label>
-          <!-- the label changes width, so it comes last and nothing else moves -->
+        </div>
+        <div class="overlay layer-nav">
           <span class="stepper" data-tip="Layer whose cut lines are shown; the layers above and below appear faint">
             <button id="layer-up" class="icon" data-tip="Layer above (PageUp)">▲</button><button id="layer-down" class="icon" data-tip="Layer below (PageDown)">▼</button><span id="layer-label"></span>
           </span>
         </div>
+        <div id="layer-strip" class="layer-strip"></div>
       </div>
       <div class="splitter" id="splitter" data-tip="Drag to resize the views · double-click to reset"></div>
       <div class="pane" id="pane3d">
