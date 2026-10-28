@@ -1,7 +1,19 @@
 export type Shape = 'box' | 'cylinder' | 'lying' | 'sphere' | 'polygon'
 export type Dim = 'l' | 'w' | 'h' | 'd' | 'r'
 
-export interface Material { id: string; name: string; thickness: number; color: string }
+export interface Material {
+  id: string
+  name: string
+  thickness: number
+  color: string
+  /** Sizes of the stock sheets in mm and how many of each are in stock (missing = unlimited); none (or 0) = no size limit. */
+  sheets?: { w: number; h: number; count?: number }[]
+}
+/**
+ * A layer placed by hand on stock sheet number `sheet` (w × h) of its material: its origin (the case centre)
+ * in mm from the sheet corner, turned by `rot` degrees clockwise.
+ */
+export interface SheetPlacement { layer: number; material: string; sheet: number; w: number; h: number; x: number; y: number; rot: number }
 /** Finger notch centred on the item's outline at fraction `t` of the way around (see perimeterPoint). */
 export interface Notch {
   t: number
@@ -63,6 +75,8 @@ export interface Project {
   labelColor: string
   /** Width of the cut (laser, mill, knife) in mm; the export offsets cut lines by half of it. */
   kerf: number
+  /** Layers placed by hand on the stock sheets; missing in older saves. */
+  placements?: SheetPlacement[]
 }
 
 const KEY = 'incase.project'

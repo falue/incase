@@ -5,11 +5,13 @@ import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, defaultItem, itemHeight, LAYER_COST, loadProject, newProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type CaseKey, type Dim, type Item, type Material, type Project, type Shape } from './model'
+import { boxCorners, defaultItem, itemHeight, LAYER_COST, loadProject, newProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
+import { planSheets, type Piece, type Sheet } from './sheets'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
+import { SheetView } from './viewSheets'
 
-type Section = 'case' | 'materials' | 'items' | 'selection'
+type Section = 'case' | 'materials' | 'export' | 'items' | 'selection'
 type Layout = 'top' | 'split' | '3d'
 
 const SHAPES: Record<Shape, string> = { box: 'Box', cylinder: 'Cylinder', lying: 'Lying cylinder', sphere: 'Sphere', polygon: 'Polygon' }
@@ -120,10 +122,10 @@ const text = (get: () => string, set: (v: string) => void, ...rebuild: Section[]
     changed(...rebuild)
   })
 
-const color = (get: () => string, set: (v: string) => void) =>
+const color = (get: () => string, set: (v: string) => void, ...rebuild: Section[]) =>
   input('color', get, el => {
     set(el.value)
-    changed()
+    changed(...rebuild)
   })
 
 /** Labelled field with hover help; dragging the label of a number field scrubs its value (Shift = fine). */
@@ -201,7 +203,7 @@ function syncInputs() {
   }
 }
 
-const renderers: Record<Section, () => void> = { case: renderCase, materials: renderMaterials, items: renderItems, selection: renderSelection }
+const renderers: Record<Section, () => void> = { case: renderCase, materials: renderMaterials, export: renderExport, items: renderItems, selection: renderSelection }
 
 /** Call after every model change; rebuilds the listed panels (structural changes), the rest is synced in place. */
 function changed(...rebuild: Section[]) {
@@ -359,8 +361,8 @@ function renderMaterials() {
     ...ms.map((m, i) =>
       h('div', { className: 'row sortable' },
         dragHandle((from, to) => (move(ms, from, to), changed('materials'))),
-        withTip(color(() => m.color, v => (m.color = v)), 'Cut line colour of this material in the exported SVG'),
-        withTip(Object.assign(text(() => m.name, v => (m.name = v)), { className: 'grow' }), 'Material name, shown on the layer labels'),
+        withTip(color(() => m.color, v => (m.color = v), 'export'), 'Cut line colour of this material in the exported SVG'),
+        withTip(Object.assign(text(() => m.name, v => (m.name = v), 'export'), { className: 'grow' }), 'Material name, shown on the layer labels'),
         prop(unit(), size(() => m.thickness, v => (m.thickness = v)), 'Sheet thickness', 'short'),
         iconButton('✕', 'Also removes its layers from the stack', () => {
           ms.splice(i, 1)
@@ -369,9 +371,59 @@ function renderMaterials() {
       ),
     ),
     h('div', { className: 'row' },
-      button('+ Material', '', () => ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor() }), 'materials'),
+      button('+ Material', 'Starts with the sheet sizes of the first material that has any', () => {
+        const sheets = structuredClone(ms.find(m => m.sheets?.some(s => s.w && s.h))?.sheets)
+        ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor(), sheets })
+      }, 'materials'),
     ),
   )
+  renderExport() // lists the materials
+}
+
+/**
+ * The stock sheet sizes of a material: its name with + to add a size, then one row per size (W, H, count in stock;
+ * an empty row while it has none = no limit). A value entered in the first row is filled in for the materials that
+ * have only that one row with it empty.
+ */
+function sheetSizes(m: Material) {
+  const rows = () => (m.sheets?.length ? m.sheets : (m.sheets = [{ w: 0, h: 0 }]))
+  const field = (i: number, key: 'w' | 'h', label: string, tip: string) => {
+    const el = input('number', () => (m.sheets?.[i]?.[key] ? fmtLen(m.sheets[i][key]) : ''), el => {
+      rows()[i][key] = el.valueAsNumber > 0 ? (inches ? el.valueAsNumber * MM_PER_IN : el.valueAsNumber) : 0
+      changed()
+    })
+    el.min = '0'
+    el.placeholder = '∞'
+    if (!i) {
+      el.onchange = () => {
+        for (const o of project.materials) if (!o.sheets || o.sheets.length <= 1) (o.sheets ??= [{ w: 0, h: 0 }])[0][key] ||= rows()[0][key]
+        changed()
+      }
+    }
+    return prop(label, el, tip, 'short')
+  }
+  const count = (i: number) => {
+    const el = input('number', () => String(m.sheets?.[i]?.count ?? ''), el => {
+      rows()[i].count = el.valueAsNumber >= 1 ? Math.round(el.valueAsNumber) : undefined
+      changed()
+    })
+    Object.assign(el, { min: '1', step: '1', placeholder: '∞' })
+    return prop('×', el, 'How many of these sheets you have; empty = as many as needed', 'count')
+  }
+  const sizes = m.sheets?.length ? m.sheets : [null]
+  return [
+    h('div', { className: 'row' },
+      h('span', { className: 'swatch', style: `background:${m.color}` }),
+      h('span', { className: 'grow', textContent: m.name }),
+      iconButton('+', 'Add another sheet size; the smallest one a layer fits on (and still in stock) is used first', () => rows().push({ w: 0, h: 0 }), 'export'),
+    ),
+    ...sizes.map((_, i) => h('div', { className: 'row size' },
+      field(i, 'w', 'W', `Width of these ${m.name} sheets${i ? '' : '; entering it fills it in for materials without one'}`),
+      field(i, 'h', 'H', `Height of these ${m.name} sheets${i ? '' : '; entering it fills it in for materials without one'}`),
+      count(i),
+      sizes.length > 1 ? iconButton('✕', 'Remove this sheet size', () => m.sheets!.splice(i, 1), 'export') : h('span', { className: 'icon-space' }),
+    )),
+  ]
 }
 
 /** Export settings and buttons. */
@@ -381,10 +433,12 @@ function renderExport() {
       prop('Label colour', color(() => project.labelColor, v => (project.labelColor = v)), 'Layer labels and object outlines in the exports; must differ from all material colours'),
       prop('Kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the cut (laser beam, mill or knife); exported pieces grow by half of it so they come out at nominal size'),
     ),
+    h('h4', { textContent: 'Sheet sizes', tip: 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the min. wall apart. Empty = no limit' }),
+    ...project.materials.flatMap(sheetSizes),
+    h('h4', { textContent: 'Export sheets' }),
     h('div', { className: 'row' },
-      h('button', { textContent: 'SVG', tip: 'All layers side by side as one SVG in mm, ready for the laser', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project)), 'image/svg+xml') }),
-      h('button', { textContent: 'DXF', tip: 'Same as the SVG, as a DXF (R12, mm) with one layer per material', onclick: () => download('incase.dxf', exportDxf(project, computeLayers(project)), 'application/dxf') }),
-      h('button', { textContent: 'PDF', tip: 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', onclick: pdfDialog }),
+      h('button', { className: 'primary', textContent: 'SVG', tip: 'All layers on the stock sheets of their material, as one SVG in mm', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project), true), 'image/svg+xml') }),
+      h('button', { className: 'primary', textContent: 'DXF', tip: 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', onclick: () => download('incase.dxf', exportDxf(project, computeLayers(project), true), 'application/dxf') }),
     ),
   )
 }
@@ -796,7 +850,12 @@ function lidWarning(it: Item) {
   return room < LID_MARGIN && `${it.name} almost touches the lid (${fmtLen(room)} ${unit()} left)`
 }
 
-function renderWarnings(conflicts: Set<string>) {
+function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
+  const missing = new Map<string, number>()
+  for (const s of sheets.filter(s => s.missing)) {
+    const what = `${s.material.name} sheets of ${fmtLen(s.w)} × ${fmtLen(s.h)} ${unit()}`
+    missing.set(what, (missing.get(what) ?? 0) + 1)
+  }
   const total = stackTotal(project)
   const diff = total - project.box.depth
   const colors = project.materials.map(m => m.color.toLowerCase())
@@ -807,6 +866,9 @@ function renderWarnings(conflicts: Set<string>) {
     ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
     colors.includes(project.labelColor.toLowerCase()) && 'Label colour equals a material colour',
     new Set(colors).size < colors.length && 'Two materials share a line colour',
+    ...[...missing].map(([what, n]) => `${n} more ${what} needed than in stock`),
+    ...sheets.filter(s => s.oversize).map(s => `Layer ${s.pieces[0].layer.index + 1} is larger than every ${s.material.name} sheet size`),
+    ...sheets.flatMap(s => s.pieces.filter(pc => pc.conflict).map(pc => `Layer ${pc.layer.index + 1} is closer than the min. wall to another piece on its sheet`)),
   ].filter((w): w is string => !!w)
   const el = $('warnings')
   el.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
@@ -890,9 +952,33 @@ function setLayout(v: Layout) {
   layout = v
   setPref('layout', v)
   viewports.className = `layout-${v}`
+  setExporting(false)
 }
-setLayout(layout)
 const renderLayout = segmented($('layout'), [['top', 'Top', 'Top view only (1)'], ['split', 'Split', 'Top view and 3D side by side (2)'], ['3d', '3D', '3D view only (3)']], () => layout, setLayout)
+
+let exporting = false
+/** Export mode: the stock sheets fill the view and the left column holds only the export settings; the design is out of reach. */
+function setExporting(on: boolean) {
+  exporting = on
+  document.body.classList.toggle('export-mode', on)
+  if (on && view2d.isDrawing) view2d.cancelDrawing()
+  select(on ? null : selectedId)
+}
+$('to-export').onclick = () => setExporting(true)
+$('back').onclick = () => setExporting(false)
+
+// plain export: all layers side by side, no stock sheets; label colour and kerf as set in the export mode
+const plainExport = $('plain-export') as HTMLDetailsElement
+const plainItem = (textContent: string, tip: string, action: () => void) =>
+  h('button', { textContent, tip, onclick: () => ((plainExport.open = false), action()) })
+$('plain-export-menu').replaceChildren(
+  plainItem('SVG', 'All layers side by side as one SVG in mm', () => download('incase.svg', exportSvg(project, computeLayers(project), false), 'image/svg+xml')),
+  plainItem('DXF', 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', () => download('incase.dxf', exportDxf(project, computeLayers(project), false), 'application/dxf')),
+  plainItem('PDF', 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', pdfDialog),
+)
+addEventListener('pointerdown', e => {
+  if (!plainExport.contains(e.target as Node)) plainExport.open = false
+})
 
 function applyTheme(theme: string) {
   document.documentElement.dataset.theme = theme
@@ -955,9 +1041,25 @@ splitter.onpointerdown = e => {
   splitter.onpointerup = () => {
     splitter.onpointermove = null
     splitter.classList.remove('dragging')
+    view3d.fit(true)
   }
 }
-splitter.ondblclick = () => setSplit(0.5)
+splitter.ondblclick = () => {
+  setSplit(0.5)
+  view3d.fit(true)
+}
+
+/** Hand placement from the sheet view; every other piece is fixed where it is, so nothing else moves. */
+function placePiece(sheets: Sheet[], moved: Piece, to: SheetPlacement) {
+  project.placements = sheets.flatMap(s => (s.index < 0 ? [] : s.pieces.map(pc =>
+    pc === moved ? to : { layer: pc.layer.index, material: s.material.id, sheet: s.index, w: s.w, h: s.h, x: pc.x, y: pc.y, rot: pc.rot })))
+  changed()
+}
+const sheetView = new SheetView($('view-sheets'), { place: placePiece })
+$('repack').onclick = () => {
+  project.placements = []
+  changed()
+}
 
 const stepLayer = (step: number) => {
   layerIndex += step // clamped when the views render
@@ -1036,7 +1138,9 @@ function updateChrome() {
   duplicateTool.disabled = deleteTool.disabled = !it
   undoTool.disabled = !history.canUndo
   redoTool.disabled = !history.canRedo
-  $('hint').textContent = view2d.isDrawing
+  $('hint').textContent = exporting
+    ? 'Drag a piece to move it, also onto another sheet · drag its handle to turn it (Shift 15°), double-click or R by 90° · Re-pack lays all out again · ⌘Z undo · Esc back to the design'
+    : view2d.isDrawing
     ? 'Click to add corners · click the first one, double-click or Enter to finish · Backspace removes the last · Esc cancels'
     : it
     ? 'Drag to move · drag handle to rotate (Shift 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
@@ -1049,7 +1153,8 @@ function scheduleViews() {
     frame = 0
     const layers = computeLayers(project)
     const conflicts = wallConflicts(project)
-    renderWarnings(conflicts)
+    renderWarnings(conflicts, planSheets(project, layers).sheets)
+    if (exporting) return sheetView.render(project, layers)
     layerIndex = Math.max(0, Math.min(layerIndex, layers.length - 1))
     const layer = layers[layerIndex]
     $('layer-label').textContent = layer
@@ -1089,7 +1194,6 @@ function renderAll() {
   renderGridField()
   renderCase()
   presetPicker()
-  renderExport()
   renderStackWeight()
   changed('materials', 'items', 'selection')
 }
@@ -1116,7 +1220,14 @@ addEventListener('keydown', e => {
     updateChrome()
     return e.preventDefault()
   }
-  if (mod && key === 'z') restore(e.shiftKey ? history.redo() : history.undo())
+  if (plain && key === 'e') setExporting(!exporting)
+  // the design is out of reach while exporting
+  else if (exporting && !mod && !LAYOUT_KEYS[key]) {
+    if (plain && key === 'r') sheetView.rotateHovered()
+    else if (e.key === 'Escape') setExporting(false)
+    else return
+  }
+  else if (mod && key === 'z') restore(e.shiftKey ? history.redo() : history.undo())
   else if (mod && key === 'y') restore(history.redo())
   else if (plain && SHAPE_KEYS[key]) addItem(SHAPE_KEYS[key])
   else if (plain && key === 'a') arrange(!e.shiftKey)
@@ -1146,4 +1257,5 @@ addEventListener('keydown', e => {
   e.preventDefault()
 })
 
+setLayout(layout)
 renderAll()

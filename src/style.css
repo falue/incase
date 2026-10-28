@@ -112,8 +112,37 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 #viewports:not(.layout-split) .splitter { display: none; }
 .splitter { cursor: col-resize; background: var(--line); }
 .splitter:hover, .splitter.dragging { background: var(--accent); }
-#pane2d { grid-column: 1; }
-#pane3d { grid-column: 3; }
+#pane2d { grid-column: 1; grid-row: 1; }
+#pane3d { grid-column: 3; grid-row: 1; }
+/* export mode: the sheets cover the other views, which stay sized like in the top layout; only the export settings are left */
+#pane-sheets { grid-column: 1 / -1; grid-row: 1; display: none; }
+body.export-mode { grid-template-columns: 300px 0 minmax(0, 1fr) 0; }
+body.export-mode #viewports { grid-template-columns: minmax(0, 1fr) 0 0; }
+body.export-mode #pane-sheets { display: block; z-index: 2; }
+body.export-mode :is(#toolbar, #objects, #global > details, #design-actions, .splitter) { display: none; }
+body:not(.export-mode) :is(#export-section, #back) { display: none; }
+body.export-mode #layout button.active { background: none; color: var(--muted); }
+#export-section { border-bottom: 1px solid var(--line); }
+#export-section > h3 { margin: 0; padding: 8px 10px 4px; font-size: 13px; }
+#export-section > div { padding: 0 10px 10px; }
+#export .primary { flex: 1; }
+/* sheet sizes: indented below their material */
+#export .row.size { padding-left: 14px; }
+#export .row.size > .prop.short { flex: 1 1 0; }
+#export .row > .prop.count { flex: 0 0 58px; }
+.icon-space { width: 26px; flex: none; }
+/* bottom of the left column: the way into the export mode and back */
+#design-actions, #back { margin: auto 10px 0; }
+#design-actions { display: flex; flex-direction: column; gap: 4px; }
+#design-actions h4 { margin: 0 0 2px; }
+#design-actions button, #design-actions summary, #back { padding: 8px 12px; font-weight: 600; }
+.links { margin-top: 0 !important; }
+/* drop-down opening upwards */
+details.dropdown { position: relative; border: none; }
+.dropdown > summary { border-radius: 5px; background: var(--panel-2); text-align: center; }
+.dropdown > summary::before { display: none; }
+.dropdown > summary:hover { background: var(--hover); }
+details.dropdown > .menu { position: absolute; z-index: 6; bottom: calc(100% + 4px); left: 0; display: flex; flex-direction: column; gap: 2px; min-width: 100%; padding: 4px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); }
 .pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
 .view { position: absolute; inset: 0; }
 .view > svg, .view > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -262,7 +291,6 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 .object-table { display: grid; grid-template-columns: minmax(0, 1fr) 130px 64px 64px 64px 26px; gap: 4px; max-height: 50vh; overflow-y: auto; align-items: center; }
 .object-row { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; }
 .object-table input:disabled { opacity: 0.3; }
-#export .row button { flex: 1; }
 .prop > input[type='color'] { flex: none; width: 22px; margin: 1px 4px 1px auto; }
 .grid-field .prop { width: 92px; background: var(--panel); }
 
@@ -297,3 +325,20 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 .thumb span { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .thumb.current { border-color: var(--accent); color: var(--text); }
 .thumb .piece { fill-opacity: 0.15; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+
+/* sheet view: stock sheets with the pieces on them */
+#view-sheets svg { background: var(--canvas); user-select: none; touch-action: none; }
+#view-sheets .sheet { fill: var(--panel); stroke: var(--ink-muted); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+#view-sheets .sheet.unlimited, #view-sheets .sheet.spare { fill: none; stroke-dasharray: 4 3; }
+#view-sheets .sheet.oversize, #view-sheets .sheet.missing { stroke: var(--warn); }
+#view-sheets .title { fill: var(--muted); }
+#view-sheets .piece { cursor: move; }
+#view-sheets .piece.fixed { cursor: default; }
+#view-sheets .cut { fill-rule: evenodd; fill-opacity: 0.12; stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+#view-sheets .piece:hover .cut { fill-opacity: 0.3; }
+#view-sheets .piece.conflict .cut { stroke: var(--warn); fill: var(--warn); }
+#view-sheets .outline { fill: none; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+#view-sheets .piece.selected .cut { stroke-width: 2.5px; fill-opacity: 0.3; }
+#view-sheets .handle-line { stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
+#view-sheets .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
+#view-sheets .label { font-family: sans-serif; }

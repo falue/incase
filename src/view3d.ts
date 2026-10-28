@@ -378,17 +378,23 @@ export class View3D {
     this.draw()
   }
 
-  /** Frames the whole case from the front-right corner, so it fits both the width and the height of the view. */
-  fit() {
+  /**
+   * Frames the whole case so it fits both the width and the height of the view: from the front-right corner, or
+   * (`keepAngle`) from the direction the camera looks now.
+   */
+  fit(keepAngle = false) {
     if (!this.box) return
     const b = this.box
     const L = Math.max(b.topL, b.bottomL), W = Math.max(b.topW, b.bottomW)
     const target = new THREE.Vector3(0, (b.lidDepth - b.depth) / 2, 0) // middle of case + lid
     // seen from the front-right corner: 45° around the vertical axis, ~40° above the horizon
-    const dir = new THREE.Vector3(1.1 * Math.SQRT1_2, 0.9, 1.1 * Math.SQRT1_2).normalize()
+    const dir = keepAngle
+      ? this.camera.position.clone().sub(this.controls.target).normalize()
+      : new THREE.Vector3(1.1 * Math.SQRT1_2, 0.9, 1.1 * Math.SQRT1_2).normalize()
     const o = this.orthographic
     o.position.copy(target).addScaledVector(dir, Math.max(L, W, b.depth) * 2)
-    o.lookAt(target)
+    if (keepAngle) o.quaternion.copy(this.camera.quaternion) // also keeps the roll of straight-down views
+    else o.lookAt(target)
     o.updateMatrixWorld()
     // half extents of the case box as seen from the camera
     let halfW = 0, halfH = 0
@@ -406,6 +412,7 @@ export class View3D {
     // perspective: same direction, far enough that the same height fits (near corners appear larger, hence the margin)
     const dist = (this.viewHeight * FIT_MARGIN) / (2 * Math.tan(THREE.MathUtils.degToRad(this.perspective.fov / 2)))
     this.perspective.position.copy(target).addScaledVector(dir, dist)
+    this.perspective.quaternion.copy(o.quaternion)
     this.controls.target.copy(target)
     this.controls.update()
     this.draw()

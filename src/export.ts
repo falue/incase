@@ -2,11 +2,12 @@ import type { PointD } from 'clipper2-ts'
 import { contours, svgPath, type Contour } from './curves'
 import { offset, type Layer } from './geometry'
 import type { Project } from './model'
+import { FONT, pieceShapes, planSheets, sheetTitle } from './sheets'
 
 const GAP = 10
 const MARGIN = 5
-const FONT = 5
 const STROKE = 0.3528 // mm = 1 pt
+const TITLE_RAISE = 3 // mm from a sheet title's baseline to its sheet
 
 /** What gets drawn for one layer, in sheet mm (y down): cut lines, object outlines and a label below. */
 export interface Piece {
@@ -45,21 +46,59 @@ export function layout(p: Project, layers: Layer[]) {
   return { width: layers.length * (L + GAP) - GAP + 2 * MARGIN, height: W + FONT + 4 + 2 * MARGIN, pieces, font: FONT, stroke: STROKE }
 }
 
+type Label = { x: number; y: number; size: number; rot: number; text: string }
+
+/**
+ * Everything to draw, in mm (y down). On sheets: the stock sheets (frames and titles) and on them every layer's cut
+ * lines (kerf applied), object outlines and label; sheet frames and object outlines in the label colour.
+ * Otherwise all layers side by side (see layout), each label below its layer.
+ */
+function drawing(p: Project, layers: Layer[], onSheets: boolean) {
+  if (!onSheets) {
+    const { width, height, pieces } = layout(p, layers)
+    return {
+      width,
+      height,
+      frames: [] as Contour[],
+      titles: pieces.map(pc => ({ ...pc.labelAt, text: pc.label })),
+      pieces: pieces.map((pc, i) => ({ layer: layers[i], cut: pc.cut, outlines: pc.outlines, label: null as Label | null })),
+    }
+  }
+  const { sheets, width, height } = planSheets(p, layers)
+  const frame = ({ x, y, w, h }: { x: number; y: number; w: number; h: number }): Contour =>
+    ({ start: { x, y }, segments: [{ to: { x: x + w, y } }, { to: { x: x + w, y: y + h } }, { to: { x, y: y + h } }, { to: { x, y } }] })
+  return {
+    width,
+    height,
+    frames: sheets.filter(s => !s.unlimited).map(frame),
+    titles: sheets.map(s => ({ x: s.x, y: s.y - TITLE_RAISE, text: sheetTitle(sheets, s) })),
+    pieces: sheets.flatMap(s => s.pieces.map(pc => {
+      const { cut, outlines, label } = pieceShapes(p, s, pc)
+      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), label: label as Label | null }
+    })),
+  }
+}
+
 const esc = (s: string) => s.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)
 
-/** One SVG in mm, cut lines in the material colours. */
-export function exportSvg(p: Project, layers: Layer[]): string {
-  const { width, height, pieces } = layout(p, layers)
+/** One SVG in mm (see drawing), cut lines in the material colours; labels of turned pieces are turned with them. */
+export function exportSvg(p: Project, layers: Layer[], onSheets: boolean): string {
+  const { width, height, frames, titles, pieces } = drawing(p, layers, onSheets)
+  const labels = pieces.flatMap(({ label: l }) => (l ? [{ ...l, transform: l.rot ? ` transform="rotate(${l.rot} ${l.x} ${l.y})"` : '' }] : []))
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
+<g id="sheets" fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}">
+${frames.length ? `<path d="${svgPath(frames)}"/>` : ''}
+</g>
 <g id="outlines" fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}">
 ${pieces.filter(pc => pc.outlines.length).map(pc => `<path d="${svgPath(pc.outlines)}"/>`).join('\n')}
 </g>
 <g id="cut" fill="none" stroke-width="${STROKE}">
-${pieces.map(pc => `<path stroke="${pc.color}" d="${svgPath(pc.cut)}"/>`).join('\n')}
+${pieces.map(pc => `<path stroke="${pc.layer.material.color}" d="${svgPath(pc.cut)}"/>`).join('\n')}
 </g>
 <g id="labels" fill="${p.labelColor}" font-family="sans-serif" font-size="${FONT}">
-${pieces.map(pc => `<text x="${pc.labelAt.x}" y="${pc.labelAt.y}">${esc(pc.label)}</text>`).join('\n')}
+${titles.map(t => `<text x="${t.x}" y="${t.y}">${esc(t.text)}</text>`).join('\n')}
+${labels.map(l => `<text x="${l.x}" y="${l.y}" font-size="${l.size}"${l.transform}>${esc(l.text)}</text>`).join('\n')}
 </g>
 </svg>
 `
@@ -88,10 +127,10 @@ function aci(hex: string): number {
 
 /**
  * One DXF (R12, mm, y up) with the same content as the SVG: closed polylines with arc bulges,
- * one layer per material (CUT_1_<name> …) in the nearest AutoCAD colour, plus OUTLINES and LABELS.
+ * one layer per foam layer (CUT_1_<material> …) in the nearest AutoCAD colour, plus SHEETS, OUTLINES and LABELS.
  */
-export function exportDxf(p: Project, layers: Layer[]): string {
-  const { height, pieces } = layout(p, layers)
+export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): string {
+  const { height, frames, titles, pieces } = drawing(p, layers, onSheets)
   const out: (string | number)[] = [0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1009', 9, '$INSUNITS', 70, 4, 9, '$MEASUREMENT', 70, 1, 0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES']
   const n = (v: number) => Math.round(v * 1000) / 1000
   const polylines = (cs: Contour[], layer: string, color: number) => {
@@ -107,11 +146,16 @@ export function exportDxf(p: Project, layers: Layer[]): string {
     }
   }
   const label = aci(p.labelColor)
-  pieces.forEach((pc, i) => {
+  // rotation in degrees counter-clockwise (y up): a piece turned clockwise on screen is at 270
+  const text = (x: number, y: number, size: number, s: string, rot = 0) =>
+    out.push(0, 'TEXT', 8, 'LABELS', 62, label, 10, n(x), 20, n(height - y), 40, size, 1, s.replace(/·/g, '-'), 50, (360 - rot) % 360)
+  polylines(frames, 'SHEETS', label)
+  for (const t of titles) text(t.x, t.y, FONT, t.text)
+  for (const pc of pieces) {
     polylines(pc.outlines, 'OUTLINES', label)
-    polylines(pc.cut, `CUT_${i + 1}_${layers[i].material.name.replace(/[^\w-]+/g, '_')}`, aci(pc.color))
-    out.push(0, 'TEXT', 8, 'LABELS', 62, label, 10, n(pc.labelAt.x), 20, n(height - pc.labelAt.y), 40, FONT, 1, pc.label.replace(/·/g, '-'))
-  })
+    polylines(pc.cut, `CUT_${pc.layer.index + 1}_${pc.layer.material.name.replace(/[^\w-]+/g, '_')}`, aci(pc.layer.material.color))
+    if (pc.label) text(pc.label.x, pc.label.y, pc.label.size, pc.label.text, pc.label.rot)
+  }
   out.push(0, 'ENDSEC', 0, 'EOF')
   return out.join('\n') + '\n'
 }

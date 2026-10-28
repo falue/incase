@@ -31,8 +31,14 @@ Everything runs locally in the browser: no account, no server, no data leaves yo
 - **3D view**: foam layers, objects, case and lid; orthographic or perspective, explode, X/Y section sliders,
   objects that reach into the lid show red.
 - **Auto-arrange**: spread objects evenly or pack them tightly (no-fit polygons, the method SVGnest uses).
-- **Export**: one SVG or DXF in mm with all layers side by side; cut lines in each material's colour as real lines and arcs,
-  object outlines and layer labels in a separate label colour, optional kerf compensation (laser, mill or knife).
+- **Stock sheets**: "Export on sheets…" swaps to the export mode: the layers laid out on your stock sheets (one or more sizes per
+  material for laser, CNC, waterjet …, each with how many you have, unlimited by default): every layer goes onto the
+  first sheet with room, else onto a new sheet of the smallest size it fits that is still in stock (if none is left,
+  sheets beyond your stock are marked), turned by 90° where that helps, keeping the min. wall apart.
+  Drag pieces, also onto another sheet, turn them with their handle (Shift 15°, double-click or R by 90°), or re-pack.
+- **Export**: one SVG or DXF in mm with the layers on their stock sheets (or, via "Direct export to…", all side by side); cut lines in each material's colour as real
+  lines and arcs, object outlines, sheet frames and labels (placed inside each piece) in a separate label colour,
+  optional kerf compensation (laser, mill or knife).
   PDF with 1:1 templates for cutting by hand: any paper size, layers larger than a sheet are split onto overlapping
   sheets with alignment crosses, plus a scale check square.
 - Undo / redo, autosave, project save / load as JSON, mm or inches, dark / light mode.
@@ -61,6 +67,8 @@ npm run build    # static build in dist/
 | PageUp / PageDown | step through the layers |
 | F | fit the 3D view |
 | 1 / 2 / 3 | top view / split / 3D |
+| E, Esc | export mode on / off |
+| R | turn the piece under the pointer by 90° (export mode) |
 
 Drag the label of any number field to scrub its value (⇧ for fine steps).
 

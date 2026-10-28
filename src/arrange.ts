@@ -14,6 +14,22 @@ type Placement = { x: number; y: number; rot: number }
 export interface ArrangeResult { failed: number; placements: (Placement & { id: string })[] }
 type Bounds = { left: number; top: number; right: number; bottom: number }
 
+// area swept by the mirrored part along the edges of `paths`: reference positions where the part touches them.
+// minkowskiSumD only sweeps the part's outline, so filled copies at every vertex close the gaps inside it.
+function sweep(part: PathsD, paths: PathsD) {
+  const mirrored = part.map(path => path.map(q => ({ x: -q.x, y: -q.y })))
+  return unionD(paths.flatMap(path => [
+    ...mirrored.flatMap(m => minkowskiSumD(m, path, true)),
+    ...path.flatMap(q => mirrored.map(m => m.map(v => ({ x: v.x + q.x, y: v.y + q.y })))),
+  ]), FillRule.NonZero)
+}
+
+/** Reference positions where `part` lies inside `bin` and clear of `obstacles` (no-fit polygons). */
+export function freePositions(part: PathsD, bin: PathsD, obstacles: PathsD) {
+  const inside = differenceD(bin, sweep(part, bin), FillRule.NonZero)
+  return obstacles.length ? differenceD(inside, unionD([...sweep(part, obstacles), ...obstacles], FillRule.NonZero), FillRule.NonZero) : inside
+}
+
 /**
  * Packs the items into the bin, largest first, using no-fit polygons (the method SVGnest uses):
  * each item goes to the free position and rotation that keeps the bounding box of all placed items smallest.
@@ -23,15 +39,6 @@ function pack(p: Project, outline: PathsD, gap: number, tolerance: number) {
   const bin = simplifyPathsD(offset(outline, -gap), tolerance)
   const footprint = (it: Item, rot: number) =>
     simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0, rot }, -Infinity), FillRule.NonZero), tolerance)
-  // area swept by the mirrored part along the edges of `paths`: reference positions where the part touches them.
-  // minkowskiSumD only sweeps the part's outline, so filled copies at every vertex close the gaps inside it.
-  const sweep = (part: PathsD, paths: PathsD) => {
-    const mirrored = part.map(path => path.map(q => ({ x: -q.x, y: -q.y })))
-    return unionD(paths.flatMap(path => [
-      ...mirrored.flatMap(m => minkowskiSumD(m, path, true)),
-      ...path.flatMap(q => mirrored.map(m => m.map(v => ({ x: v.x + q.x, y: v.y + q.y })))),
-    ]), FillRule.NonZero)
-  }
 
   const order = p.items
     .map(it => ({ it, area: Math.abs(areaPathsD(footprint(it, 0))) }))
@@ -44,8 +51,7 @@ function pack(p: Project, outline: PathsD, gap: number, tolerance: number) {
     let best: (Placement & { part: PathsD; score: number }) | null = null
     for (const rot of rotations(it)) {
       const part = footprint(it, rot)
-      const inside = differenceD(bin, sweep(part, bin), FillRule.NonZero)
-      const free = placed.length ? differenceD(inside, unionD([...sweep(part, placed), ...placed], FillRule.NonZero), FillRule.NonZero) : inside
+      const free = freePositions(part, bin, placed)
       const b = getBoundsPathsD(part)
       for (const q of free.flat()) {
         const w = Math.max(box.right, q.x + b.right) - Math.min(box.left, q.x + b.left)

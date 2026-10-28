@@ -14,6 +14,13 @@ const round = (v: number, step: number) => Math.round(v / step) * step
 
 const MIN_CONTRAST = 80 // largest channel difference (0–255) below which a line colour vanishes on the canvas
 
+/** The colour itself, or the text colour if it would vanish on the canvas `el` (e.g. black lines in dark mode). */
+export function visibleOn(el: Element, hex: string) {
+  const canvas = getComputedStyle(el).backgroundColor.match(/\d+/g)!.slice(0, 3).map(Number)
+  const line = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
+  return Math.max(...line.map((c, i) => Math.abs(c - canvas[i]))) < MIN_CONTRAST ? 'var(--ink)' : hex
+}
+
 export interface View2DHost {
   select(id: string | null): void
   /** Called after an item was moved or rotated. */
@@ -191,7 +198,7 @@ export class View2D {
     // neighbouring layers, faint; hovering an object's cut there names it
     for (const [l, where] of [[layers[index - 1], 'above'], [layers[index + 1], 'below']] as const) {
       if (!l) continue
-      parts.push(`<path class="layer faint" stroke="${this.visible(l.material.color)}" d="${pathData(l.paths)}"/>`)
+      parts.push(`<path class="layer faint" stroke="${visibleOn(this.svg, l.material.color)}" d="${pathData(l.paths)}"/>`)
       for (const it of p.items) {
         const cut = itemCuts(it, l.a, resting(p, it).z)
         if (cut.length) parts.push(hit(pathData(unionD(cut, FillRule.NonZero)), `Layer ${where}: ${it.name}`))
@@ -208,7 +215,7 @@ export class View2D {
     })
     // outlines under the cut lines, so with fit 0 the cut line stays visible
     for (const d of outlines) parts.push(`<path class="object-outline" stroke="${p.labelColor}" d="${d}"/>`)
-    if (layer) parts.push(`<path class="layer" stroke="${this.visible(layer.material.color)}" d="${layerPaths}"/>`)
+    if (layer) parts.push(`<path class="layer" stroke="${visibleOn(this.svg, layer.material.color)}" d="${layerPaths}"/>`)
     for (const it of items) parts.push(`<text class="name" x="${it.x}" y="${it.y}">${esc(it.name)}</text>`)
     if (this.selected) {
       const it = this.selected
@@ -237,15 +244,8 @@ export class View2D {
   thumbnail(p: Project, layer: Layer, margin = 5) {
     const w = Math.max(p.box.topL, p.box.bottomL) + 2 * margin
     const h = Math.max(p.box.topW, p.box.bottomW) + 2 * margin
-    const color = this.visible(layer.material.color)
+    const color = visibleOn(this.svg, layer.material.color)
     return `<svg viewBox="${-w / 2} ${-h / 2} ${w} ${h}" style="aspect-ratio:${w}/${h}"><path class="piece" fill-rule="evenodd" fill="${color}" stroke="${color}" d="${pathData(layer.paths)}"/></svg>`
-  }
-
-  /** The colour itself, or the text colour if it would vanish on the canvas (e.g. black lines in dark mode). */
-  private visible(hex: string) {
-    const canvas = getComputedStyle(this.svg).backgroundColor.match(/\d+/g)!.slice(0, 3).map(Number)
-    const line = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
-    return Math.max(...line.map((c, i) => Math.abs(c - canvas[i]))) < MIN_CONTRAST ? 'var(--ink)' : hex
   }
 
   private rerender() {
