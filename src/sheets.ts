@@ -222,9 +222,9 @@ export function planSheets(p: Project, layers: Layer[], { spare = false, head = 
 /** "Foam 10 · 10 mm · 1000 × 600 · sheet 2/3". */
 export function sheetTitle(sheets: Sheet[], s: Sheet) {
   const { name, thickness } = s.material
-  if (s.unlimited) return `${name} · ${thickness} mm · no sheet size set`
-  const all = sheets.filter(o => o.material === s.material && !o.spare)
   const size = `${Math.round(s.w * 10) / 10} × ${Math.round(s.h * 10) / 10}`
+  if (s.unlimited) return `${name} · ${thickness} mm · no sheet size set - ${size} mm`
+  const all = sheets.filter(o => o.material === s.material && !o.spare)
   return `${name} · ${thickness} mm · ${size} · sheet ${all.indexOf(s) + 1}/${all.length}${s.oversize ? ' · larger than every sheet size' : s.missing ? ' · not in stock' : ''}`
 }
 
@@ -257,12 +257,13 @@ function layerLabel(l: Layer, minWall: number) {
   return label
 }
 
-/** Cut lines (kerf applied), object outlines and label of a piece, in drawing mm. */
+/** Cut lines (kerf applied), object outlines, label and object names (turned by `rot`) of a piece, in drawing mm. */
 export function pieceShapes(p: Project, s: Sheet, pc: Piece) {
   const ox = s.x + pc.x, oy = s.y + pc.y
   return {
     cut: turn(p.kerf > 0 ? offset(pc.layer.paths, p.kerf / 2) : pc.layer.paths, pc.rot, ox, oy),
     outlines: turn(pc.layer.outlines, pc.rot, ox, oy),
     label: turn(layerLabel(pc.layer, p.box.minWall), pc.rot, ox, oy),
+    names: pc.layer.names.map(n => ({ ...turn([[n]], pc.rot, ox, oy)[0][0], rot: pc.rot, text: n.text })),
   }
 }

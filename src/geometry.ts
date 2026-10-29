@@ -156,6 +156,8 @@ export interface Layer {
   paths: PathsD
   /** Outlines of the objects themselves (no fit, no notches). */
   outlines: PathsD
+  /** Object names at the centres of their outlines; top layer only. */
+  names: { x: number; y: number; text: string }[]
 }
 
 /** The object's own outline in a slab (or its footprint for a = -Infinity), without fit and notches. */
@@ -241,8 +243,13 @@ export function computeLayers(p: Project): Layer[] {
       const cuts = joinCuts(p.items.map(it => itemCuts(it, a, resting(p, it).z)))
       booleanOpDWithPolyTree(ClipType.Difference, [outline], cuts, tree, FillRule.NonZero, 3)
     }
-    const outlines = unionD(p.items.flatMap(it => objectOutline(it, a, resting(p, it).z)), FillRule.NonZero)
-    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines }
+    const own = p.items.map(it => ({ it, outline: objectOutline(it, a, resting(p, it).z) }))
+    const outlines = unionD(own.flatMap(o => o.outline), FillRule.NonZero)
+    const names = index ? [] : own.filter(o => o.it.name && o.outline.length).map(({ it, outline }) => {
+      const b = getBoundsPathsD(outline)
+      return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2, text: it.name }
+    })
+    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines, names }
   })
 }
 

@@ -368,3 +368,4 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 #view-sheets .handle-line { stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
 #view-sheets .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
 #view-sheets .label { fill: none; stroke-width: 1px; vector-effect: non-scaling-stroke; }
+#view-sheets .name { text-anchor: middle; dominant-baseline: central; }

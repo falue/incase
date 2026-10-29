@@ -39,7 +39,7 @@ function draw(doc: jsPDF, cs: Contour[], dx: number, dy: number) {
   doc.stroke()
 }
 
-/** Cut lines, object outlines and label of a piece (those two if switched on), shifted by (dx, dy). */
+/** Cut lines, object outlines, label and object names of a piece (the last three if switched on), shifted by (dx, dy). */
 function drawPiece(doc: jsPDF, p: Project, pc: Piece, dx: number, dy: number, font: number) {
   doc.setLineWidth(LINE)
   doc.setDrawColor(p.outlineColor)
@@ -49,6 +49,8 @@ function drawPiece(doc: jsPDF, p: Project, pc: Piece, dx: number, dy: number, fo
   if (!p.showLabels) return
   doc.setTextColor(pc.labelColor).setFontSize(font * PT_PER_MM)
   doc.text(pc.label.replace(/·/g, '-'), pc.labelAt.x + dx, pc.labelAt.y + dy)
+  doc.setTextColor(p.labelColor)
+  for (const t of pc.names) doc.text(t.text, t.x + dx, t.y + dy, { align: 'center', baseline: 'middle' })
 }
 
 const cross = (doc: jsPDF, x: number, y: number) => {

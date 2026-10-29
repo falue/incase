@@ -489,7 +489,7 @@ function sheetSizes(m: Material) {
 function renderExport() {
   $('export').replaceChildren(
     h('div', { className: 'row' },
-      checkbox('Labels engraving', 'Layer labels on the sheets and in the exports', project.showLabels, on => (project.showLabels = on)),
+      checkbox('Labels engraving', 'Layer labels and object names on the sheets and in the exports. Each object\'s name is centred in it on the top layer, as text: move it to where it should be engraved', project.showLabels, on => (project.showLabels = on)),
       withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Colour of the labels (except the topmost layer\'s number); must differ from all material colours'),
     ),
     h('div', { className: 'row' },
