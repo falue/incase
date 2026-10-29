@@ -396,8 +396,9 @@ function renderMaterials() {
         const sheets = structuredClone(ms.find(m => m.sheets?.some(s => s.w && s.h))?.sheets)
         ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor(), sheets })
       }, 'materials'),
+      h('span', { className: 'grow' }),
+      prop('Min. wall', size(() => project.box.minWall, v => (project.box.minWall = v)), 'Minimum material wall thickness: the least foam left between any two cutouts and between a cutout and the case wall', 'short'),
     ),
-    h('div', { className: 'row' }, prop('Min. wall', size(() => project.box.minWall, v => (project.box.minWall = v)), 'Minimum material wall thickness: the least foam left between any two cutouts and between a cutout and the case wall')),
   )
   renderExport() // lists the materials
 }
@@ -521,14 +522,10 @@ function renderStack(starMm = 5) {
       ...(project.stackAuto ? [] : [iconButton('✕', '', manual(() => stack.splice(i, 1)))]),
     )
   })
-  $('stack-head').replaceChildren(
-    h('span', {
-      className: 'total' + (z > box.depth + 0.01 ? ' off' : ''),
-      textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
-      tip: 'A stack lower than the case is fine (it rests on the floor); a taller one does not fit',
-    }),
-    checkbox('Auto stack', 'When on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', project.stackAuto, on => (project.stackAuto = on)),
-  )
+  Object.assign($('stack-total'), {
+    className: z > box.depth + 0.01 ? 'total off' : '',
+    textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
+  })
   // how far each object's cut misses a layer boundary, and the stack the case depth
   const off = project.items.map(it => ({ name: it.name, d: Math.abs(resting(project, it).z - it.z) })).filter(o => o.d > 0.01)
   const worst = off.reduce((w, o) => (o.d > w.d ? o : w), { name: '', d: 0 })
@@ -539,8 +536,12 @@ function renderStack(starMm = 5) {
     short > 0.01 && `stack ${fmtLen(short)} ${unit()} short of the case depth`,
   ].filter(Boolean)
   const score = Math.max(0, 5 - Math.floor((total + (short > 0.01 ? short : 0)) / starMm))
-  $('stack-score').dataset.tip = `Fit ${score}/5: ${misses.length ? misses.join(' · ') : 'every object sits right on a layer top and the stack fills the case'}. One star less per ${fmtLen(starMm)} ${unit()} off`
-  $('stack-score').replaceChildren(...[0, 1, 2, 3, 4].map(i => h('span', { className: i < score ? '' : 'miss', textContent: '★' })))
+  $('stack-head').replaceChildren(
+    h('span', { tip: `Fit ${score}/5: ${misses.length ? misses.join(' · ') : 'every object sits right on a layer top and the stack fills the case'}. One star less per ${fmtLen(starMm)} ${unit()} off` },
+      'Stack fit: ', h('span', { id: 'stack-score' }, ...[0, 1, 2, 3, 4].map(i => h('span', { className: i < score ? '' : 'miss', textContent: '★' })))),
+    h('span', { className: 'grow' }),
+    checkbox('Auto', 'Auto stack: when on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', project.stackAuto, on => (project.stackAuto = on)),
+  )
   $('stack').replaceChildren(
     ...rows,
     ...(project.stackAuto ? [] : [button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id)))]),
