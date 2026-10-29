@@ -1,6 +1,6 @@
 import './style.css'
 import type { ArrangeResult } from './arrange'
-import { AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal, type Layer } from './geometry'
+import { alignItems, AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal, type Align, type Layer } from './geometry'
 import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
@@ -57,6 +57,16 @@ const ICONS = {
   pack: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="5" rx="1"/><rect x="13" y="10" width="8" height="11" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
   redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
+  align: '<path d="M4 3v18"/><rect x="7" y="6" width="12" height="4" rx="1"/><rect x="7" y="14" width="7" height="4" rx="1"/>',
+  left: '<path d="M4 3v18"/><rect x="7" y="6" width="12" height="4" rx="1"/><rect x="7" y="14" width="7" height="4" rx="1"/>',
+  centerX: '<path d="M12 3v18"/><rect x="5" y="6" width="14" height="4" rx="1"/><rect x="8" y="14" width="8" height="4" rx="1"/>',
+  right: '<path d="M20 3v18"/><rect x="5" y="6" width="12" height="4" rx="1"/><rect x="10" y="14" width="7" height="4" rx="1"/>',
+  top: '<path d="M3 4h18"/><rect x="6" y="7" width="4" height="12" rx="1"/><rect x="14" y="7" width="4" height="7" rx="1"/>',
+  centerY: '<path d="M3 12h18"/><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="8" width="4" height="8" rx="1"/>',
+  bottom: '<path d="M3 20h18"/><rect x="6" y="5" width="4" height="12" rx="1"/><rect x="14" y="10" width="4" height="7" rx="1"/>',
+  distributeX: '<path d="M3 4v16M21 4v16"/><rect x="6" y="8" width="3" height="8" rx="1"/><rect x="15" y="8" width="3" height="8" rx="1"/><rect x="10.5" y="8" width="3" height="8" rx="1"/>',
+  distributeY: '<path d="M4 3h16M4 21h16"/><rect x="8" y="6" width="8" height="3" rx="1"/><rect x="8" y="15" width="8" height="3" rx="1"/><rect x="8" y="10.5" width="8" height="3" rx="1"/>',
+  first: '<rect x="3" y="3" width="10" height="10" rx="1"/><rect x="11" y="11" width="10" height="10" rx="1" stroke-dasharray="2 2"/><path d="M8 8l8 8"/>',
   chain: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   chainBroken: '<path d="M15 9l3-3a3 3 0 0 0-4.2-4.2l-3 3M9 15l-3 3a3 3 0 0 0 4.2 4.2l3-3M4 8h3M8 4v3M20 16h-3M16 20v-3"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/>',
@@ -70,7 +80,7 @@ const pref = (key: string) => localStorage.getItem(`incase.${key}`)
 const setPref = (key: string, value: string) => localStorage.setItem(`incase.${key}`, value)
 
 let project: Project = loadProject()
-let selectedId: string | null = null
+let selection: string[] = [] // selected item ids, in the order they were selected
 let layerIndex = 0 // layer shown in the top view, 0 = topmost
 let inches = pref('units') === 'in' // display only, the model is always mm
 let history = new History(JSON.stringify(project))
@@ -80,7 +90,9 @@ const $ = (id: string) => document.getElementById(id)!
 const fmt = (v: number) => String(Math.round(v * 1e4) / 1e4)
 const fmtLen = (mm: number) => fmt(inches ? mm / MM_PER_IN : mm)
 const unit = () => (inches ? 'in' : 'mm')
-const selected = () => project.items.find(it => it.id === selectedId)
+/** The selected item if exactly one is selected. */
+const selected = () => (selection.length === 1 ? project.items.find(it => it.id === selection[0]) : undefined)
+const selectedItems = () => selection.map(id => project.items.find(it => it.id === id)!)
 
 /** Creates an element; `tip` becomes its hover help (see the tooltip below). */
 function h<K extends keyof HTMLElementTagNameMap>(tag: K, { tip, ...props }: Record<string, unknown> = {}, ...children: (Node | string)[]) {
@@ -583,7 +595,7 @@ function renderItems() {
   if (!project.items.length) return $('items').replaceChildren(h('span', { className: 'hint', textContent: 'Add objects with the tools on the left (B, C, L, S).' }))
   $('items').replaceChildren(
     ...project.items.map(it =>
-      h('button', { className: it.id === selectedId ? 'selected' : '', onclick: () => select(it.id) },
+      h('button', { className: selection.includes(it.id) ? 'selected' : '', onclick: (e: MouseEvent) => select(it.id, e.shiftKey) },
         h('span', { innerHTML: icon(it.shape) }),
         h('span', { className: 'grow', textContent: it.name }),
         h('span', { className: 'hint', textContent: SHAPES[it.shape] }),
@@ -592,8 +604,9 @@ function renderItems() {
   )
 }
 
-function select(id: string | null) {
-  selectedId = id
+/** Selects only `id` (null: nothing); `add` (Shift-click) adds it to the selection or removes it. */
+function select(id: string | null, add = false) {
+  selection = !id ? [] : !add ? [id] : selection.includes(id) ? selection.filter(s => s !== id) : [...selection, id]
   changed('items', 'selection')
 }
 
@@ -638,10 +651,12 @@ function createPolygon(points: { x: number; y: number }[]) {
   select(it.id)
 }
 
-function duplicate(it: Item) {
-  const copy = { ...structuredClone(it), id: uid(), name: `${it.name} copy`, x: it.x + 10, y: it.y + 10 }
-  project.items.push(copy)
-  select(copy.id)
+/** Copies the items 10 mm down right and selects the copies. */
+function duplicate(items: Item[]) {
+  const copies = items.map(it => ({ ...structuredClone(it), id: uid(), name: `${it.name} copy`, x: it.x + 10, y: it.y + 10 }))
+  project.items.push(...copies)
+  selection = copies.map(c => c.id)
+  changed('items', 'selection')
 }
 
 // --- dialog: locks the UI; Esc closes it ---
@@ -844,18 +859,21 @@ const violation = (it: Item) => wallViolations(project, it).get(it.id) ?? 0
 function restore(state: string | null) {
   if (state === null) return
   project = parseProject(state)
-  if (!selected()) selectedId = null
+  selection = selection.filter(id => project.items.some(it => it.id === id))
   renderAll()
 }
 
-function remove(it: Item) {
-  project.items = project.items.filter(o => o !== it)
+function remove(items: Item[]) {
+  project.items = project.items.filter(o => !items.includes(o))
   select(null)
 }
 
 function renderSelection() {
   const it = selected()
-  $('selection-section').hidden = !it
+  $('selection-section').hidden = !selection.length
+  if (selection.length > 1) {
+    return $('selection').replaceChildren(h('p', { className: 'hint', textContent: `${selection.length} objects selected: drag, nudge, align, duplicate or delete them together; select one to edit it.` }))
+  }
   if (!it) return $('selection').replaceChildren()
 
   const shape = h('select', {}, ...(Object.entries(SHAPES) as [Shape, string][]).map(([value, textContent]) => h('option', { value, textContent })))
@@ -983,7 +1001,7 @@ document.documentElement.addEventListener('pointerleave', hideTooltip)
 function openProject(name: string) {
   project = loadProject(name)
   history = new History(JSON.stringify(project))
-  selectedId = null
+  selection = []
   layerIndex = 0
   renderAll()
 }
@@ -992,7 +1010,7 @@ function openProject(name: string) {
 function startNew() {
   if (currentName()) openProject('')
   project = newProject(project)
-  selectedId = null
+  selection = []
   renderAll()
 }
 
@@ -1139,7 +1157,8 @@ function setExporting(on: boolean) {
   exporting = on
   document.body.classList.toggle('export-mode', on)
   if (on && view2d.isDrawing) view2d.cancelDrawing()
-  select(on ? null : selectedId)
+  if (on) selection = []
+  changed('items', 'selection')
 }
 $('to-export').onclick = () => setExporting(true)
 $('back').onclick = () => setExporting(false)
@@ -1155,7 +1174,7 @@ $('plain-export-menu').replaceChildren(
   plainItem('JSON', 'The project incl. materials as a file (or all projects in one), to keep or share; Load opens it again', exportJson),
 )
 addEventListener('pointerdown', e => {
-  for (const menu of [plainExport, projects]) if (!menu.contains(e.target as Node)) menu.open = false
+  for (const menu of [plainExport, projects, alignMenu]) if (!menu.contains(e.target as Node)) menu.open = false
 })
 
 function applyTheme(theme: string) {
@@ -1287,14 +1306,35 @@ renderCamera = segmented($('camera'), [['ortho', 'Ortho', 'Orthographic: no pers
 // --- tool strip & status bar ---
 
 const tool = (name: keyof typeof ICONS, tip: string, onclick: () => void) => h('button', { className: 'tool', tip, innerHTML: icon(name), onclick })
-const duplicateTool = tool('duplicate', 'Duplicate (⌘/Ctrl+D)', () => {
-  const it = selected()
-  if (it) duplicate(it)
-})
-const deleteTool = tool('delete', 'Delete (Del)', () => {
-  const it = selected()
-  if (it) remove(it)
-})
+const duplicateTool = tool('duplicate', 'Duplicate (⌘/Ctrl+D)', () => duplicate(selectedItems()))
+const deleteTool = tool('delete', 'Delete (Del)', () => remove(selectedItems()))
+
+// align: one tool with a menu beside it; needs 2+ selected objects (distribute 3+)
+const alignMenu = h('details', { className: 'dropdown flyout' })
+const ALIGNS: [Align, string, string][] = [
+  ['left', 'Left', 'Left edges onto the leftmost'],
+  ['centerX', 'Center X', 'Centres onto the middle of the selection, left to right'],
+  ['right', 'Right', 'Right edges onto the rightmost'],
+  ['top', 'Top', 'Top edges onto the topmost'],
+  ['centerY', 'Center Y', 'Centres onto the middle of the selection, top to bottom'],
+  ['bottom', 'Bottom', 'Bottom edges onto the lowest'],
+  ['distributeX', 'Distribute X', 'Equal gaps left to right; the outermost stay (3+ objects)'],
+  ['distributeY', 'Distribute Y', 'Equal gaps top to bottom; the outermost stay (3+ objects)'],
+  ['first', 'Center on first', 'Centres onto the centre of the first selected object'],
+]
+const renderAlignMenu = () => alignMenu.replaceChildren(
+  h('summary', { className: 'tool', innerHTML: icon('align'), tip: 'Align the selected objects (by their outlines, without fit)' }),
+  h('div', { className: 'menu' }, ...ALIGNS.map(([how, label, tip]) => h('button', {
+    innerHTML: `${icon(how)}<span>${label}</span>`, tip, disabled: selection.length < (how.startsWith('distribute') ? 3 : 2),
+    onclick: () => {
+      alignMenu.open = false
+      alignItems(selectedItems(), how)
+      changed()
+    },
+  }))),
+)
+alignMenu.ontoggle = () => alignMenu.open && renderAlignMenu()
+renderAlignMenu()
 const undoTool = tool('undo', 'Undo (⌘/Ctrl+Z)', () => restore(history.undo()))
 const redoTool = tool('redo', 'Redo (⇧⌘Z / Ctrl+Y)', () => restore(history.redo()))
 $('toolbar').replaceChildren(
@@ -1302,26 +1342,29 @@ $('toolbar').replaceChildren(
   tool('polygon', 'Polygon: click its corners in the top view (P)', startPolygon),
   h('hr'),
   duplicateTool,
-  deleteTool,
+  alignMenu,
   tool('even', 'Arrange evenly: largest equal gaps, centred (A)', () => arrange(true)),
   tool('pack', 'Pack tightly at the min. wall, centred (⇧A)', () => arrange(false)),
   h('hr'),
   undoTool,
   redoTool,
+  Object.assign(deleteTool, { className: 'tool bottom' }),
 )
 $('fit-3d').replaceWith(Object.assign(tool('fit', 'Fit the case into the 3D view (F)', () => view3d.fit()), { id: 'fit-3d' }))
 
 function updateChrome() {
   const it = selected()
-  duplicateTool.disabled = deleteTool.disabled = !it
+  duplicateTool.disabled = deleteTool.disabled = !selection.length
   undoTool.disabled = !history.canUndo
   redoTool.disabled = !history.canRedo
   $('hint').textContent = exporting
     ? 'Drag a piece to move it, also onto another sheet · drag its handle to turn it (Ctrl 15°), double-click or R by 90° · Re-pack lays all out again · ⌘Z undo · Esc back to the design'
     : view2d.isDrawing
     ? 'Click to add corners · click the first one, double-click or Enter to finish · Backspace removes the last · Esc cancels'
+    : selection.length > 1
+    ? 'Drag one to move them all · Shift-click adds or removes · align them with the align tool · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
     : it
-    ? 'Drag to move · Ctrl snaps · drag handle to rotate (Ctrl 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
+    ? 'Drag to move · Shift-click selects more · Ctrl snaps · drag handle to rotate (Ctrl 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
     : 'B C L S add · Tab next object under the click · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
 }
 
@@ -1341,9 +1384,9 @@ function scheduleViews() {
     layerUp.disabled = layerIndex <= 0
     layerDown.disabled = layerIndex >= layers.length - 1
     $('stack').querySelectorAll('.sortable').forEach((row, i) => row.classList.toggle('current', i === layerIndex))
-    view2d.render(project, selectedId, layers, layerIndex, conflicts)
+    view2d.render(project, selection, layers, layerIndex, conflicts)
     renderLayerStrip(layers)
-    view3d.update(project, layers, selectedId, layerIndex)
+    view3d.update(project, layers, selection, layerIndex)
   })
 }
 
@@ -1386,7 +1429,7 @@ addEventListener('keydown', e => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
   const key = e.key.toLowerCase()
   const plain = !e.metaKey && !e.ctrlKey && !e.altKey
-  const it = selected()
+  const it = selected(), items = selectedItems()
   const step = (view2d.snap ? view2d.snapStep : 1) * (e.shiftKey ? 10 : 1)
   const nudge: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }
   const mod = e.metaKey || e.ctrlKey
@@ -1416,21 +1459,19 @@ addEventListener('keydown', e => {
   else if (plain && LAYOUT_KEYS[key]) {
     setLayout(LAYOUT_KEYS[key])
     renderLayout()
-  } else if (it && nudge[e.key]) {
+  } else if (items.length && nudge[e.key]) {
+    // keep clear: the whole nudge is refused if it makes any violation worse
     const [dx, dy] = nudge[e.key]
-    const before = violation(it)
-    it.x += dx
-    it.y += dy
-    if (view2d.constrain && violation(it) > before + AREA_TOL) {
-      it.x -= dx
-      it.y -= dy
-    }
+    const before = items.map(violation)
+    const by = (k: number) => items.forEach(o => Object.assign(o, { x: o.x + k * dx, y: o.y + k * dy }))
+    by(1)
+    if (view2d.constrain && items.some((o, i) => violation(o) > before[i] + AREA_TOL)) by(-1)
     changed()
-  } else if (it && (e.key === 'Delete' || e.key === 'Backspace')) {
-    if (!view2d.deleteVertex()) remove(it)
+  } else if (items.length && (e.key === 'Delete' || e.key === 'Backspace')) {
+    if (!(it && view2d.deleteVertex())) remove(items)
   }
-  else if (it && e.key === 'Escape') select(null)
-  else if (it && (e.metaKey || e.ctrlKey) && key === 'd') duplicate(it)
+  else if (items.length && e.key === 'Escape') select(null)
+  else if (items.length && (e.metaKey || e.ctrlKey) && key === 'd') duplicate(items)
   else return
   e.preventDefault()
 })

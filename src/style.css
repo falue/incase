@@ -142,6 +142,11 @@ details.dropdown { position: relative; border: none; }
 .dropdown > summary { border-radius: 5px; background: var(--panel-2); text-align: center; }
 .dropdown > summary::before { display: none; }
 .dropdown > summary:hover { background: var(--hover); }
+details.dropdown.flyout > summary { background: none; }
+details.dropdown.flyout > .menu { top: 0; bottom: auto; left: calc(100% + 4px); min-width: 150px; }
+details.dropdown.flyout > .menu button { display: flex; align-items: center; gap: 8px; text-align: left; }
+details.dropdown.flyout > .menu svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; flex: none; }
+#toolbar .bottom { margin-top: auto; }
 details.dropdown.down > .menu { top: calc(100% + 4px); bottom: auto; left: auto; right: 0; min-width: 240px; }
 #projects > summary { display: flex; gap: 8px; align-items: center; padding: 4px 8px 4px 10px; max-width: 220px; border: 1px solid var(--line); cursor: pointer; }
 #project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

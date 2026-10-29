@@ -24,7 +24,8 @@ export function visibleOn(el: Element, hex: string) {
 }
 
 export interface View2DHost {
-  select(id: string | null): void
+  /** `add`: Shift-click, adds the item to the selection or removes it. */
+  select(id: string | null, add?: boolean): void
   /** Called after an item was moved or rotated. */
   change(): void
   /** Formats a length in mm for the tooltips. */
@@ -64,7 +65,8 @@ const CLOSE = 8 // px; clicking this close to the first point closes a drawn pol
 const EDGE_HIT = 6 // px; double-clicking this close to a polygon edge inserts a point
 
 type Drag =
-  | { mode: 'move'; item: Item; dx: number; dy: number }
+  // `only`: a click on a member of a multi-selection that does not move selects just that one
+  | { mode: 'move'; group: { item: Item; x: number; y: number }[]; px: number; py: number; moved: boolean; only: string | null }
   | { mode: 'rotate'; item: Item }
   | { mode: 'notch'; item: Item; index: number }
   | { mode: 'vertex'; item: Item; index: number }
@@ -89,7 +91,8 @@ export class View2D {
   private items: Item[] = []
   private footprints: PathsD[] = []
   private pick: { x: number; y: number } | null = null // last click on an item, for Tab cycling
-  private selected: Item | null = null
+  private selected: Item | null = null // the only selected item (handles, resizing)
+  private selection: string[] = []
   private drag: Drag | null = null
   private zoom = 1
   private center = { x: 0, y: 0 }
@@ -211,8 +214,8 @@ export class View2D {
   }
 
   /** Shows the cut lines of `layers[index]`, its neighbours faint. */
-  render(p: Project, selectedId: string | null, layers: Layer[], index: number, conflicts: Set<string>) {
-    this.last = [p, selectedId, layers, index, conflicts]
+  render(p: Project, selection: string[], layers: Layer[], index: number, conflicts: Set<string>) {
+    this.last = [p, selection, layers, index, conflicts]
     const layer = layers[index]
     const b = p.box
     const w = (Math.max(b.topL, b.bottomL) + 2 * MARGIN) / this.zoom
@@ -220,7 +223,8 @@ export class View2D {
     this.svg.setAttribute('viewBox', `${this.center.x - w / 2} ${this.center.y - h / 2} ${w} ${h}`)
     // only objects that cut into the shown layer
     const items = (this.items = layer ? p.items.filter(it => itemCuts(it, layer.a, resting(p, it).z).length) : p.items)
-    this.selected = items.find(it => it.id === selectedId) ?? null
+    this.selection = selection
+    this.selected = selection.length === 1 ? items.find(it => it.id === selection[0]) ?? null : null
 
     const outline = (z: number) => pathData([caseOutline(b, z, z) ?? []])
     const grid = this.snapStep // the snap grid, also what Ctrl snaps to
@@ -263,7 +267,7 @@ export class View2D {
     items.forEach((it, i) => parts.push(hit(outlines[i], `${it.name}: the object itself, without the fit (exported in the label colour)`)))
     items.forEach((it, i) => {
       const tip = `${it.name}: cut outline incl. fit and notches · drag to move`
-      parts.push(`<path data-id="${it.id}" data-tip="${esc(tip)}" class="item${it === this.selected ? ' selected' : ''}" d="${pathData(footprints[i])}"/>`)
+      parts.push(`<path data-id="${it.id}" data-tip="${esc(tip)}" class="item${selection.includes(it.id) ? ' selected' : ''}" d="${pathData(footprints[i])}"/>`)
     })
     // outlines under the cut lines, so with fit 0 the cut line stays visible
     for (const d of outlines) parts.push(`<path class="object-outline" stroke="${p.outlineColor}" d="${d}"/>`)
@@ -384,6 +388,8 @@ export class View2D {
   }
 
   private up() {
+    const d = this.drag
+    if (d?.mode === 'move' && !d.moved && d.only) this.ctl.select(d.only)
     this.drag = null
     const s = this.sizing
     if (!s?.dragging) return
@@ -500,7 +506,7 @@ export class View2D {
     const role = target.getAttribute('data-role')
     if (e.button === 1 || (!id && !role)) {
       e.preventDefault()
-      if (e.button !== 1) this.ctl.select(null)
+      if (e.button !== 1 && !e.shiftKey) this.ctl.select(null)
       this.drag = { mode: 'pan', x: e.clientX, y: e.clientY, cx: this.center.x, cy: this.center.y, scale: 1 / this.svg.getScreenCTM()!.a }
     } else if (role === 'rotate' && this.selected) {
       this.drag = { mode: 'rotate', item: this.selected }
@@ -517,11 +523,15 @@ export class View2D {
       this.drag = { mode: 'vertex', item: this.selected, index: this.vertex }
       this.rerender()
     } else {
-      const item = this.items.find(it => it.id === id)!
-      const p = this.point(e)
+      // drags the selection it belongs to (after a Shift-click: the new one), else just this item
+      const p = this.point(e), member = this.selection.includes(id!)
+      const ids = e.shiftKey ? (member ? [] : [...this.selection, id]) : member ? this.selection : [id]
       this.pick = { x: p.x, y: p.y }
-      this.drag = { mode: 'move', item, dx: item.x - p.x, dy: item.y - p.y }
-      this.ctl.select(id)
+      this.drag = {
+        mode: 'move', px: p.x, py: p.y, moved: false, only: !e.shiftKey && member && this.selection.length > 1 ? id : null,
+        group: this.items.filter(it => ids.includes(it.id)).map(item => ({ item, x: item.x, y: item.y })),
+      }
+      if (e.shiftKey || !member) this.ctl.select(id, e.shiftKey)
     }
     this.svg.setPointerCapture(e.pointerId)
   }
@@ -559,6 +569,7 @@ export class View2D {
       Object.assign(this.sizing!, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey })
       return this.resize()
     }
+    if (d.mode === 'move') return this.moveGroup(d, this.point(e), e.ctrlKey)
     const p = this.point(e), it = d.item
     if (d.mode === 'notch') {
       // pointer in the item's local frame, projected onto its outline
@@ -580,16 +591,31 @@ export class View2D {
       Object.assign(it, prev)
       return false
     }
-    if (d.mode === 'move') {
-      const step = this.snap || e.ctrlKey ? this.snapStep : 0.1
-      const x = round(p.x + d.dx, step), y = round(p.y + d.dy, step)
-      // when blocked, slide along the obstacle on one axis
-      attempt(() => Object.assign(it, { x, y })) || attempt(() => (it.x = x)) || attempt(() => (it.y = y))
-    } else {
-      const a = (Math.atan2(p.y - it.y, p.x - it.x) * 180) / Math.PI + 90
-      const snapped = this.snap || e.ctrlKey ? round(a, 15) : round(a, 0.1)
-      attempt(() => (it.rot = ((snapped + 540) % 360) - 180))
+    const a = (Math.atan2(p.y - it.y, p.x - it.x) * 180) / Math.PI + 90
+    const snapped = this.snap || e.ctrlKey ? round(a, 15) : round(a, 0.1)
+    attempt(() => (it.rot = ((snapped + 540) % 360) - 180))
+    this.ctl.change()
+  }
+
+  /**
+   * Moves the dragged items together; the first one lands on the snap step. A move that makes any min. wall violation
+   * worse (keep clear) is refused; then the group slides along the obstacle on one axis.
+   */
+  private moveGroup(d: Extract<Drag, { mode: 'move' }>, p: Point, ctrl: boolean) {
+    if (!d.group.length || (!d.moved && Math.hypot(p.x - d.px, p.y - d.py) < 2 * this.unitsPerPixel())) return
+    d.moved = true
+    const step = this.snap || ctrl ? this.snapStep : 0.1, lead = d.group[0]
+    const dx = round(lead.x + p.x - d.px, step) - lead.x, dy = round(lead.y + p.y - d.py, step) - lead.y
+    const now = { x: lead.item.x - lead.x, y: lead.item.y - lead.y }
+    const before = this.constrain ? d.group.map(g => this.ctl.violation(g.item)) : []
+    const to = (mx: number, my: number) => d.group.forEach(g => Object.assign(g.item, { x: g.x + mx, y: g.y + my }))
+    const attempt = (mx: number, my: number) => {
+      to(mx, my)
+      if (!this.constrain || d.group.every((g, i) => this.ctl.violation(g.item) <= before[i] + AREA_TOL)) return true
+      to(now.x, now.y)
+      return false
     }
+    attempt(dx, dy) || attempt(dx, now.y) || attempt(now.x, dy)
     this.ctl.change()
   }
 }

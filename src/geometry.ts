@@ -1,4 +1,4 @@
-import { areaD, areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, unionD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
+import { areaD, areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, getBoundsPathsD, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, unionD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
 import { itemHeight, perimeterPoint, type CaseDims, type Item, type Material, type Project } from './model'
 
 const TOL = 0.02 // max chord deviation of arcs in mm
@@ -161,6 +161,47 @@ export interface Layer {
 /** The object's own outline in a slab (or its footprint for a = -Infinity), without fit and notches. */
 export const objectOutline = (it: Item, a: number, z = it.z) =>
   unionD(itemCuts({ ...it, fit: 0, notches: [] }, a, z), FillRule.NonZero)
+
+export type Align = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom' | 'distributeX' | 'distributeY' | 'first'
+
+/**
+ * Moves items by the bounding boxes of their outlines (without fit and notches): edges or centres onto those of all
+ * the boxes together, equal gaps between them keeping the outermost edges (distribute), or every centre onto the
+ * first item's.
+ */
+export function alignItems(items: Item[], how: Align) {
+  const boxes = items.map(it => getBoundsPathsD(objectOutline(it, -Infinity)))
+  const all = {
+    left: Math.min(...boxes.map(b => b.left)), right: Math.max(...boxes.map(b => b.right)),
+    top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)),
+  }
+  const mid = (b: typeof all) => ({ x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 })
+  const shift = (i: number, dx: number, dy: number) => Object.assign(items[i], { x: items[i].x + dx, y: items[i].y + dy })
+  if (how === 'distributeX' || how === 'distributeY') {
+    const x = how === 'distributeX'
+    const lo = (b: typeof all) => (x ? b.left : b.top), size = (b: typeof all) => (x ? b.right - b.left : b.bottom - b.top)
+    const gap = (size(all) - boxes.reduce((sum, b) => sum + size(b), 0)) / (items.length - 1)
+    let at = lo(all)
+    for (const i of boxes.map((_, i) => i).sort((i, j) => lo(boxes[i]) - lo(boxes[j]))) {
+      shift(i, x ? at - lo(boxes[i]) : 0, x ? 0 : at - lo(boxes[i]))
+      at += size(boxes[i]) + gap
+    }
+    return
+  }
+  const c = mid(all), first = mid(boxes[0])
+  boxes.forEach((b, i) => {
+    const m = mid(b)
+    const [dx, dy] =
+      how === 'left' ? [all.left - b.left, 0]
+      : how === 'right' ? [all.right - b.right, 0]
+      : how === 'centerX' ? [c.x - m.x, 0]
+      : how === 'top' ? [0, all.top - b.top]
+      : how === 'bottom' ? [0, all.bottom - b.bottom]
+      : how === 'centerY' ? [0, c.y - m.y]
+      : [first.x - m.x, first.y - m.y]
+    shift(i, dx, dy)
+  })
+}
 
 /** Foam slabs top → bottom; a and b are measured from the foam top, the stack rests on the case floor. */
 function slabs(p: Project) {

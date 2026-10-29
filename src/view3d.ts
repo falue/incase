@@ -306,8 +306,8 @@ export class View3D {
   }
 
   /** `current` is the layer shown in the top view; it is highlighted. */
-  update(p: Project, layers: Layer[], selectedId: string | null, current: number) {
-    this.last = [p, layers, selectedId, current]
+  update(p: Project, layers: Layer[], selection: string[], current: number) {
+    this.last = [p, layers, selection, current]
     this.extent = { x: Math.max(p.box.topL, p.box.bottomL) / 2, y: Math.max(p.box.topW, p.box.bottomW) / 2 }
     const { x: [x0, x1], y: [y0, y1] } = this.sectionBounds()
     const sectioned = [x0, x1, y0, y1].some(Number.isFinite)
@@ -358,7 +358,7 @@ export class View3D {
       const { z, layer } = resting(p, it)
       const h = itemHeight(it)
       const bottom = layer >= 0 ? -(foamTop + layers[layer].a) + shift(layer) : -(foamTop + z + h)
-      const color = it.id === selectedId ? this.accent : OBJECT
+      const color = selection.includes(it.id) ? this.accent : OBJECT
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
       if (excess <= 0) return [ghost(it, bottom, color, planes)]
       // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
