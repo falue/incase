@@ -5,7 +5,7 @@ import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, copyProject, currentName, defaultItem, deleteProject, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, renameProject, resetUnsaved, saveProject, unsavedEmpty, setNotchCount, sharedPart, suggestStack, uid, uniqueName, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
+import { boxCorners, copyProject, currentName, defaultItem, deleteProject, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, normalize, renameProject, resetUnsaved, saveProject, storedCase, storedProject, unsavedEmpty, setNotchCount, sharedPart, suggestStack, uid, uniqueName, type CaseDims, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
 import { planSheets, type Piece, type Sheet } from './sheets'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
@@ -219,6 +219,7 @@ function changed(...rebuild: Section[]) {
   for (const s of new Set(rebuild)) renderers[s]()
   renderStack()
   renderPresetName()
+  renderProjects()
   syncInputs()
   history.record(() => JSON.stringify(project))
   updateChrome()
@@ -276,11 +277,17 @@ function renderCase() {
 /** "Brand - model" (model names are unique only within a brand); your own presets by their name. */
 const presetLabel = (p: Preset) => (p.user ? p.name : `${p.group} - ${p.name}`)
 
-/** Shows the applied preset next to the Case title, as long as no case size was changed since. */
-function renderPresetName() {
-  const p = [...userPresets(), ...PRESETS].find(p => presetLabel(p) === project.box.preset)
-  $('case-preset').textContent = p && CASE_KEYS.every(k => project.box[k] === p.values[k]) ? presetLabel(p) : ''
+/** The preset the case was filled from, as long as no case size was changed since; '' if none. */
+function casePreset(box: CaseDims) {
+  const p = [...userPresets(), ...PRESETS].find(p => presetLabel(p) === box.preset)
+  return p && CASE_KEYS.every(k => box[k] === p.values[k]) ? presetLabel(p) : ''
 }
+
+/** Shows the applied preset next to the Case title. */
+const renderPresetName = () => ($('case-preset').textContent = casePreset(project.box))
+
+/** The case by its preset, else by its inner size. */
+const caseName = (box: CaseDims) => casePreset(box).replace(' - ', ' · ') || `${fmtLen(box.topL)}×${fmtLen(box.topW)}×${fmtLen(box.depth)} ${unit()}`
 
 /**
  * Presets popup: pick a brand, then a model (Enter or click applies it, undoable); typing searches all brands.
@@ -547,7 +554,7 @@ function renderStack(starMm = 5) {
     h('span', { tip: `Fit ${score}/5: ${misses.length ? misses.join(' · ') : 'every object sits right on a layer top and the stack fills the case'}. One star less per ${fmtLen(starMm)} ${unit()} off` },
       'Stack fit: ', h('span', { id: 'stack-score' }, ...[0, 1, 2, 3, 4].map(i => h('span', { className: i < score ? '' : 'miss', textContent: '★' })))),
     h('span', { className: 'grow' }),
-    checkbox('Auto', 'Auto stack: when on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', project.stackAuto, on => (project.stackAuto = on)),
+    checkbox('Auto stack', 'When on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', project.stackAuto, on => (project.stackAuto = on)),
   )
   $('stack').replaceChildren(
     ...rows,
@@ -989,24 +996,29 @@ function nameField(value: string, done: (name: string) => void, cancel: () => vo
 
 const projects = $('projects') as HTMLDetailsElement
 
+/** Name and case of the open project; the list of projects is built while it is open (it reads them all). */
 function renderProjects() {
   const current = currentName()
-  $('project-name').textContent = current || 'Unsaved'
+  const label = (name: string, box: CaseDims) => [name || 'Unsaved', h('span', { className: 'hint', textContent: ` · ${caseName(box)}` })]
+  $('project-name').replaceChildren(...label(current, project.box))
   $('save').hidden = !!current
+  if (!projects.open) return
   const entry = (name: string) => {
-    const open = h('button', { className: 'grow', textContent: name || 'Unsaved', onclick: () => {
+    const open = h('button', { className: 'grow', onclick: () => {
       projects.open = false
       if (name !== current) openProject(name)
-    } })
+    } }, ...label(name, name === current ? project.box : storedCase(name)))
     const rename = () => {
       const field = nameField(name, to => (renameProject(name, to), renderProjects()), renderProjects)
       open.replaceWith(field)
       field.focus()
     }
+    // plain buttons: changed() would rebuild the list (and drop a rename field)
+    const icon = (textContent: string, tip: string, onclick: () => void) => h('button', { className: 'icon', textContent, tip, onclick })
     return h('div', { className: `row${name === current ? ' active' : ''}` }, open, ...(name ? [
-      iconButton('✎', 'Rename', rename),
-      iconButton('⧉', 'Copy (opens nothing, adds the copy to this list)', () => (copyProject(name, uniqueName(`${name} copy`)), renderProjects())),
-      iconButton('✕', 'Delete this project from the browser', () => {
+      icon('✎', 'Rename', rename),
+      icon('⧉', 'Copy (opens nothing, adds the copy to this list)', () => (copyProject(name, uniqueName(`${name.replace(/ copy( \d+)?$/, '')} copy`)), renderProjects())),
+      icon('✕', 'Delete this project from the browser', () => {
         if (!confirm(`Delete the project "${name}"? This cannot be undone.`)) return
         if (name === current) openProject('')
         deleteProject(name)
@@ -1029,33 +1041,61 @@ $('save').onclick = () => {
   field.focus()
 }
 $('new').onclick = startNew
+projects.ontoggle = renderProjects
 
 const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true })
 document.body.append(file)
 // a project file becomes a new named project; its materials join the shared ones (the same by id, else by name and thickness, are reused)
+// a file holds one project, or all of them ({ projects: [{ name, project }] }, see exportJson)
 file.onchange = async () => {
   const f = file.files?.[0]
   file.value = ''
   if (!f) return
-  let loaded: Project
+  let loaded: { name: string; project: Project }[]
   try {
-    loaded = parseProject(await f.text())
+    const data = JSON.parse(await f.text())
+    loaded = data.projects ?? [{ name: f.name.replace(/\.json$/i, '') || 'Loaded', project: data }]
+    for (const l of loaded) normalize(l.project)
   } catch {
     return alert('Not a valid project file.')
   }
+  const first = loaded.map(({ name, project: p }) => importProject(p, name))[0]
+  openProject(first)
+}
+
+/** Adds `p` as a new named project; returns its name. */
+function importProject(p: Project, name: string) {
   const ms = project.materials
-  const ids = new Map(loaded.materials.map(m => {
+  const ids = new Map(p.materials.map(m => {
     const same = ms.find(o => o.id === m.id) ?? ms.find(o => o.name === m.name && o.thickness === m.thickness)
     if (!same) ms.push(m)
     return [m.id, (same ?? m).id]
   }))
+  const unique = uniqueName(name)
   nameProject({
-    ...loaded,
+    ...p,
     ...sharedPart(project),
-    stack: loaded.stack.map(id => ids.get(id)!),
-    placements: loaded.placements?.map(pl => ({ ...pl, material: ids.get(pl.material) ?? pl.material })),
-  }, uniqueName(f.name.replace(/\.json$/i, '') || 'Loaded'))
-  openProject(currentName())
+    stack: p.stack.map(id => ids.get(id)!),
+    placements: p.placements?.map(pl => ({ ...pl, material: ids.get(pl.material) ?? pl.material })),
+  }, unique)
+  return unique
+}
+
+/** JSON of the open project, or (asked when there are more) of all: the named ones and the unsaved one if it has objects. */
+function exportJson() {
+  const current = currentName()
+  const one = () => download(`${current || 'incase'}.json`, JSON.stringify(project, null, 2), 'application/json')
+  const names = [...(!current || !unsavedEmpty() ? [''] : []), ...projectNames()]
+  if (names.length < 2) return one()
+  const all = () => {
+    const projects = names.map(name => ({ name: name || 'Unsaved', project: name === current ? project : storedProject(name) }))
+    download('incase-projects.json', JSON.stringify({ projects }, null, 2), 'application/json')
+  }
+  openDialog(
+    h('span', { textContent: `Export all ${names.length} projects, or just the current one?` }),
+    h('button', { className: 'primary', textContent: 'Everything', onclick: () => (closeDialog(), all()) }),
+    h('button', { textContent: 'Current project', onclick: () => (closeDialog(), one()) }),
+  )
 }
 $('load').onclick = () => file.click()
 $('setup').onclick = guidedSetup
@@ -1095,8 +1135,7 @@ $('plain-export-menu').replaceChildren(
   plainItem('SVG', 'All layers side by side as one SVG in mm', () => download('incase.svg', exportSvg(project, computeLayers(project), false), 'image/svg+xml')),
   plainItem('DXF', 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', () => download('incase.dxf', exportDxf(project, computeLayers(project), false), 'application/dxf')),
   plainItem('PDF', 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', pdfDialog),
-  plainItem('JSON', 'The whole project incl. materials as a file, to keep or share; Load opens it again', () =>
-    download(`${currentName() || 'incase'}.json`, JSON.stringify(project, null, 2), 'application/json')),
+  plainItem('JSON', 'The project incl. materials as a file (or all projects in one), to keep or share; Load opens it again', exportJson),
 )
 addEventListener('pointerdown', e => {
   for (const menu of [plainExport, projects]) if (!menu.contains(e.target as Node)) menu.open = false
@@ -1313,7 +1352,6 @@ function renderLayerStrip(layers: Layer[]) {
 }
 
 function renderAll() {
-  renderProjects()
   renderGridField()
   renderCase()
   presetPicker()

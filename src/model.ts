@@ -271,7 +271,7 @@ function defaultProject(): Project {
 }
 
 /** Fills in what older saves lack and drops stack layers whose material no longer exists. */
-function normalize(p: Project) {
+export function normalize(p: Project) {
   for (const it of p.items) it.d2 ??= it.d // saves from before oval cylinders and spheres
   // saves from before labels and outlines could be switched off: both on, outlines in the label colour
   p.showLabels ??= true
@@ -283,9 +283,9 @@ function normalize(p: Project) {
 
 export const parseProject = (json: string): Project => normalize(JSON.parse(json))
 
-/** Empty project (default case, no objects) with the shared settings of `from`. */
+/** Empty project (no objects) with the case and the shared settings of `from`. */
 export function newProject(from: Project): Project {
-  const p = { ...defaultProject(), items: [], ...sharedPart(from) }
+  const p = { ...defaultProject(), items: [], box: structuredClone(from.box), ...sharedPart(from) }
   return { ...p, stack: suggestStack(p.materials, p.box.depth, []) }
 }
 
@@ -316,8 +316,11 @@ const read = (key: string) => {
 export function loadProject(name = currentName()): Project {
   flushSave()
   localStorage.setItem(CURRENT, name)
-  return normalize({ ...defaultProject(), ...read(storageKey(name)), ...read(SHARED) })
+  return storedProject(name)
 }
+
+/** A stored project with the shared settings, without opening it. */
+export const storedProject = (name: string): Project => normalize({ ...defaultProject(), ...read(storageKey(name)), ...read(SHARED) })
 
 let saveTimer = 0
 let pending: (() => void) | null = null
@@ -346,11 +349,11 @@ export function nameProject(p: Project, name: string) {
   flushSave()
 }
 
-/** True if the unsaved project holds nothing: no objects, the default case. */
-export function unsavedEmpty() {
-  const p = read(UNSAVED)
-  return !p || (!p.items?.length && JSON.stringify(p.box) === JSON.stringify(defaultProject().box))
-}
+/** True if the unsaved project has no objects. */
+export const unsavedEmpty = () => !read(UNSAVED)?.items?.length
+
+/** The case of a stored project (the defaults if missing). */
+export const storedCase = (name: string): CaseDims => read(storageKey(name))?.box ?? defaultProject().box
 
 /** Empties the unsaved project (after it got a name). */
 export const resetUnsaved = (p: Project) => localStorage.setItem(UNSAVED, JSON.stringify(part(newProject(p), false)))
