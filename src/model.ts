@@ -87,6 +87,8 @@ export interface Project {
   outlineColor: string
   /** Width of the cut (laser, mill, knife) in mm; the export offsets cut lines by half of it. */
   kerf: number
+  /** mm between pieces on a sheet and to its edge; missing = the min. wall. */
+  spacing?: number
   /** Layers placed by hand on the stock sheets; missing in older saves. */
   placements?: SheetPlacement[]
 }

@@ -25,7 +25,7 @@ export interface Piece {
   rot: number
   box: Bounds
   manual: boolean
-  /** Closer than the min. wall to another piece (only hand-placed ones can be). */
+  /** Closer than the spacing to another piece (only hand-placed ones can be). */
   conflict: boolean
 }
 
@@ -125,11 +125,14 @@ function tooClose(p: Project, a: Piece, b: Piece, gap: number) {
  * top to bottom. Each goes onto the first sheet with room, top-most, then left-most, turned by 90° if that comes
  * first; if none has room, a new sheet of the smallest size it fits on and still in stock is started (if none is
  * left, of the smallest it fits on, marked missing). Hand placements that still fit their sheet stay. Pieces keep the
- * min. wall to each other and to the sheet edge. `spare` adds an empty sheet of every size still in stock; `head` is
+ * spacing to each other and to the sheet edge. `spare` adds an empty sheet of every size still in stock; `head` is
  * the room above each sheet for its title.
  */
+/** mm between pieces on a sheet and to its edge. */
+export const spacing = (p: Project) => Math.max(p.spacing ?? p.box.minWall, 0)
+
 export function planSheets(p: Project, layers: Layer[], { spare = false, head = FONT + 3 } = {}) {
-  const gap = Math.max(p.box.minWall, 0)
+  const gap = spacing(p)
   const sheets: Sheet[] = []
   let top = MARGIN, drawingW = 0
   for (const material of p.materials) {

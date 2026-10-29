@@ -488,23 +488,21 @@ function sheetSizes(m: Material) {
 /** Export settings and buttons. */
 function renderExport() {
   $('export').replaceChildren(
-    h('div', { className: 'props' },
-      prop('Engraving', color(() => project.labelColor, v => (project.labelColor = v)), 'Colour of the labels (except the topmost layer number), the object names on the top layer and the footprints; must differ from all material colours'),
-      prop('Reference', color(() => project.outlineColor, v => (project.outlineColor = v)), 'Colour of the reference lines: object and sheet outlines, the topmost layer number and the object names where they rest (also in the top view); must differ from all material colours'),
-    ),
+    // each colour leads the row of what is drawn in it
     h('div', { className: 'row' },
+      withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Engraving colour: the labels (except the topmost layer number), the object names on the top layer and the footprints; must differ from all material colours'),
       checkbox('Labels engraving', 'Layer labels and object names on the sheets and in the exports. Each object\'s name is centred in it as text, on the top layer (move it to where it should be engraved) and on the layer it rests on', project.showLabels, on => (project.showLabels = on)),
-    ),
-    h('div', { className: 'row' },
       checkbox('Footprints engraving', 'On the layer an object rests on: where the layer above is cut for it (fit and notches included)', project.showFootprints, on => (project.showFootprints = on)),
     ),
     h('div', { className: 'row' },
+      withTip(color(() => project.outlineColor, v => (project.outlineColor = v)), 'Reference colour: object and sheet outlines, the topmost layer number and the object names where they rest (also in the top view); must differ from all material colours'),
       checkbox('Reference lines', 'Object outlines on the sheets and in the exports, for orientation only', project.showOutlines, on => (project.showOutlines = on)),
     ),
     h('div', { className: 'props' },
       prop('Kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the cut (laser beam, mill or knife); exported pieces grow by half of it so they come out at nominal size'),
+      prop('Spacing', size(() => project.spacing ?? project.box.minWall, v => (project.spacing = v)), 'Gap between the pieces on a sheet and to its edge; follows the min. wall until changed here (the min. wall stays as it is)'),
     ),
-    h('h4', { textContent: 'Sheet sizes', tip: 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the min. wall apart. Empty = no limit' }),
+    h('h4', { textContent: 'Sheet sizes', tip: 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the spacing apart. Empty = no limit' }),
     ...project.materials.flatMap(sheetSizes),
     h('h4', { textContent: 'Export sheets' }),
     h('div', { className: 'row' },
@@ -946,7 +944,7 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
     new Set(colors).size < colors.length && 'Two materials share a line colour',
     ...[...missing].map(([what, n]) => `${n} more ${what} needed than in stock`),
     ...sheets.filter(s => s.oversize).map(s => `Layer ${s.pieces[0].layer.index + 1} is larger than every ${s.material.name} sheet size`),
-    ...sheets.flatMap(s => s.pieces.filter(pc => pc.conflict).map(pc => `Layer ${pc.layer.index + 1} is closer than the min. wall to another piece on its sheet`)),
+    ...sheets.flatMap(s => s.pieces.filter(pc => pc.conflict).map(pc => `Layer ${pc.layer.index + 1} is closer than the spacing to another piece on its sheet`)),
   ].filter((w): w is string => !!w)
   const el = $('warnings')
   el.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''

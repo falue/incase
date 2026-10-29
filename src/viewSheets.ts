@@ -1,7 +1,7 @@
 import { svgLines } from './curves'
 import { pathData, type Layer } from './geometry'
 import type { Project, SheetPlacement } from './model'
-import { FONT, pieceShapes, planSheets, sheetTitle, turn, turnedBox, type Piece, type Sheet } from './sheets'
+import { FONT, pieceShapes, planSheets, sheetTitle, spacing, turn, turnedBox, type Piece, type Sheet } from './sheets'
 import { visibleOn } from './view2d'
 
 const NS = 'http://www.w3.org/2000/svg'
@@ -236,7 +236,7 @@ export class SheetView {
    */
   private place(s: Sheet, piece: Piece, x: number, y: number, rot: number) {
     const [p] = this.last!
-    const g = Math.max(p.box.minWall, 0), box = turnedBox(p, piece.layer, rot)
+    const g = spacing(p), box = turnedBox(p, piece.layer, rot)
     const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, round(v, STEP)))
     const [minX, maxX, minY, maxY] = [g - box.left, s.w - g - box.right, g - box.top, s.h - g - box.bottom]
     if (minX > maxX + 1e-6 || minY > maxY + 1e-6) return false
