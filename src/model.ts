@@ -1,5 +1,5 @@
 export type Shape = 'box' | 'cylinder' | 'lying' | 'sphere' | 'polygon'
-export type Dim = 'l' | 'w' | 'h' | 'd' | 'r'
+export type Dim = 'l' | 'w' | 'h' | 'd' | 'd2' | 'r'
 
 export interface Material {
   id: string
@@ -21,7 +21,10 @@ export interface Notch {
   manual?: boolean
 }
 
-/** All dims are kept for every shape so switching shapes is lossless; z is measured from the foam top. */
+/**
+ * All dims are kept for every shape so switching shapes is lossless; z is measured from the foam top.
+ * Cylinders and spheres are d × d2 (along the object's own X and Y axes); equal = round.
+ */
 export interface Item extends Record<Dim, number> {
   id: string
   name: string
@@ -83,17 +86,28 @@ const KEY = 'incase.project'
 
 export const uid = () => crypto.randomUUID()
 
-export const itemHeight = (it: Item) => (it.shape === 'lying' || it.shape === 'sphere' ? it.d : it.h)
+export const itemHeight = (it: Item) => (it.shape === 'lying' ? it.d : it.shape === 'sphere' ? Math.min(it.d, it.d2) : it.h)
 
-/** Footprint extent [x, y] in the item's local frame, before the fit is applied. */
-export function itemSize(it: Item): [number, number] {
-  if (it.shape === 'box') return [it.l, it.w]
-  if (it.shape === 'lying') return [it.l, it.d]
+/** Footprint bounding box in the item's local frame, before the fit is applied: centre (x, y) and size (l, w). */
+export function itemBox(it: Item) {
+  if (it.shape === 'box') return { x: 0, y: 0, l: it.l, w: it.w }
+  if (it.shape === 'lying') return { x: 0, y: 0, l: it.l, w: it.d }
   if (it.shape === 'polygon') {
     const xs = it.pts.map(p => p.x), ys = it.pts.map(p => p.y)
-    return [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]
+    const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]
+    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, l: x1 - x0, w: y1 - y0 }
   }
-  return [it.d, it.d]
+  return { x: 0, y: 0, l: it.d, w: it.d2 }
+}
+
+/** Sets the footprint size (see itemBox); polygons are scaled about their box centre. */
+export function setItemSize(it: Item, l: number, w: number) {
+  if (it.shape === 'box') Object.assign(it, { l, w })
+  else if (it.shape === 'lying') Object.assign(it, { l, d: w })
+  else if (it.shape === 'polygon') {
+    const b = itemBox(it), kx = b.l ? l / b.l : 1, ky = b.w ? w / b.w : 1
+    it.pts = it.pts.map(p => ({ x: b.x + (p.x - b.x) * kx, y: b.y + (p.y - b.y) * ky }))
+  } else Object.assign(it, { d: l, d2: w })
 }
 
 /** Polygon corners for an item switched to the polygon shape: its box outline. */
@@ -103,7 +117,7 @@ export const boxCorners = (it: Item) => [[-1, -1], [1, -1], [1, 1], [-1, 1]].map
 export function defaultItem(shape: Shape, name: string, offset: number, notchDepth: number): Item {
   return {
     id: uid(), name, shape, x: offset, y: offset, rot: 0, z: 0,
-    l: 100, w: 60, h: 40, d: 60, r: 5, fit: 0, notches: [], pts: [], notchD: 25, notchDepth, notchR: 3,
+    l: 100, w: 60, h: 40, d: 60, d2: 60, r: 5, fit: 0, notches: [], pts: [], notchD: 25, notchDepth, notchR: 3,
   }
 }
 
@@ -113,10 +127,10 @@ const PARAM_SAMPLES = 720 // resolution when mapping a point onto the outline
 /** Point at fraction t of the item's outline, starting at the bottom middle (local frame, y down). */
 export function perimeterPoint(it: Item, t: number) {
   if (it.shape === 'cylinder' || it.shape === 'sphere') {
-    const r = it.d / 2, a = Math.PI / 2 + 2 * Math.PI * t
-    return { x: r * Math.cos(a), y: r * Math.sin(a) }
+    const a = Math.PI / 2 + 2 * Math.PI * t
+    return { x: (it.d / 2) * Math.cos(a), y: (it.d2 / 2) * Math.sin(a) }
   }
-  const [l, w] = itemSize(it), hx = l / 2, hy = w / 2
+  const { l, w } = itemBox(it), hx = l / 2, hy = w / 2
   const corners = it.shape === 'polygon'
     ? [...it.pts, it.pts[0]].map(p => [p.x, p.y])
     : [[0, hy], [hx, hy], [hx, -hy], [-hx, -hy], [-hx, hy], [0, hy]]
@@ -226,7 +240,11 @@ function defaultProject(): Project {
   }
 }
 
-export const parseProject = (json: string): Project => JSON.parse(json)
+export function parseProject(json: string): Project {
+  const p: Project = JSON.parse(json)
+  for (const it of p.items) it.d2 ??= it.d // saves from before oval cylinders and spheres
+  return p
+}
 
 /** Empty project for the guided setup: default case and materials, no objects. */
 export function newProject(): Project {

@@ -26,14 +26,18 @@ const DIMS: Record<Shape, [string, Dim, string][]> = {
     ['Corner R', 'r', 'Corner radius of the box seen from above'],
   ],
   cylinder: [
-    ['Diameter', 'd', ''],
+    ['Width', 'd2', "Size along the object's own Y axis (before rotation); equal to the length = round"],
+    ['Length', 'd', "Size along the object's own X axis (before rotation); the width follows while both are equal"],
     ['Depth', 'h', 'Height of the cylinder, i.e. how deep it sinks into the foam'],
   ],
   lying: [
     ['Length', 'l', ''],
     ['Diameter', 'd', 'Diameter of the lying cylinder; also how deep it sinks into the foam'],
   ],
-  sphere: [['Diameter', 'd', 'Diameter of the sphere; the cut stays full width above its centre so it can be lifted out']],
+  sphere: [
+    ['Width', 'd2', "Size along the object's own Y axis (before rotation); equal to the length = round"],
+    ['Length', 'd', "Size along the object's own X axis (before rotation); the width follows while both are equal. Its height is the smaller of both; the cut stays full width above its centre so it can be lifted out"],
+  ],
   polygon: [
     ['Depth', 'h', 'How deep the object sinks into the foam'],
     ['Corner R', 'r', 'Rounds every corner of the polygon'],
@@ -562,9 +566,16 @@ function select(id: string | null) {
 }
 
 // sizes of the last edited object; new objects start with them
-const INHERITED = ['l', 'w', 'h', 'd', 'r', 'fit', 'notchD', 'notchDepth', 'notchR'] as const
+const INHERITED = ['l', 'w', 'h', 'd', 'd2', 'r', 'fit', 'notchD', 'notchDepth', 'notchR'] as const
 let template: Partial<Item> = {}
 const remember = (it: Item) => (template = Object.fromEntries(INHERITED.map(k => [k, it[k]])))
+
+/** Sets a size; the second diameter follows the first while both are equal (round stays round). */
+function setDim(it: Item, k: Dim, v: number) {
+  if (k === 'd' && it.d2 === it.d) it.d2 = v
+  it[k] = v
+  remember(it)
+}
 
 /** New item with the sizes of the last edited one, added to the project. */
 function createItem(shape: Shape) {
@@ -685,7 +696,7 @@ function caseQuick() {
 
 /** Size each quick-entry column sets per shape ('' = not used): L / Ø, W, H. */
 const QUICK_COLUMNS: Record<Shape, (Dim | '')[]> = {
-  box: ['l', 'w', 'h'], cylinder: ['d', '', 'h'], lying: ['l', '', 'd'], sphere: ['d', '', ''], polygon: ['', '', 'h'],
+  box: ['l', 'w', 'h'], cylinder: ['d', 'd2', 'h'], lying: ['l', '', 'd'], sphere: ['d', 'd2', ''], polygon: ['', '', 'h'],
 }
 
 /** Quick entry of objects: one row each (name, type, sizes); a new empty row appears once the last one is used. */
@@ -719,8 +730,7 @@ function objectTable() {
         const key = QUICK_COLUMNS[type.value as Shape][col]
         if (!key || !Number.isFinite(el.valueAsNumber)) return
         const item = use()
-        item[key] = toMm(Math.max(0, el.valueAsNumber))
-        remember(item)
+        setDim(item, key, toMm(Math.max(0, el.valueAsNumber)))
         changed()
       }
       return el
@@ -826,7 +836,7 @@ function renderSelection() {
     changed('items', 'selection')
   }
   const dims = DIMS[it.shape]
-  const dimProp = ([label, k, tip]: [string, Dim, string]) => prop(label, size(() => it[k], v => ((it[k] = v), remember(it))), tip)
+  const dimProp = ([label, k, tip]: [string, Dim, string]) => prop(label, size(() => it[k], v => setDim(it, k, v)), tip)
 
   $('selection').replaceChildren(
     h('div', { className: 'props' },
@@ -1008,7 +1018,7 @@ $('theme').onclick = () => {
 
 // --- viewports ---
 
-const view2d = new View2D($('view2d'), { select, change: () => changed(), len: mm => `${fmtLen(mm)} ${unit()}`, violation, createPolygon })
+const view2d = new View2D($('view2d'), { select, change: () => changed(), len: mm => `${fmtLen(mm)} ${unit()}`, unit: () => ({ name: unit(), mm: inches ? MM_PER_IN : 1 }), violation, createPolygon })
 view2d.snapStep = Number(pref('grid') ?? 5)
 const showGrid = (on: boolean) => {
   view2d.snap = on

@@ -1,11 +1,13 @@
 import { FillRule, pointInPolygonD, PointInPolygonResult, unionD, type PathsD } from 'clipper2-ts'
 import { AREA_TOL, caseOutline, itemCuts, objectOutline, offset, pathData, place, resting, type Layer } from './geometry'
-import { itemSize, perimeterParam, perimeterPoint, type Item, type Project } from './model'
+import { itemBox, perimeterParam, perimeterPoint, setItemSize, type Item, type Project } from './model'
 
 const NS = 'http://www.w3.org/2000/svg'
 const MARGIN = 30
 const HANDLE = 12 // distance of the rotation handle beyond the item edge
 const ZOOM = { min: 0.2, max: 50, speed: 0.0015 }
+const LABEL = { gap: 12, ms: 500 } // size labels: px beyond the edge; how long they stay after a resize
+const CURSORS = ['ew', 'nwse', 'ns', 'nesw'] // resize cursors by handle direction, in 45° steps
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)
 /** Invisible wide stroke over a line that shows `tip` on hover. */
@@ -27,6 +29,8 @@ export interface View2DHost {
   change(): void
   /** Formats a length in mm for the tooltips. */
   len(mm: number): string
+  /** Display unit: its name and mm per unit. */
+  unit(): { name: string; mm: number }
   /** How badly the item's current placement breaks the min. wall (0 = clear). */
   violation(it: Item): number
   /** A polygon was drawn (corner points in plan coordinates). */
@@ -34,6 +38,27 @@ export interface View2DHost {
 }
 
 type Point = { x: number; y: number }
+type Axis = 'x' | 'y'
+
+/**
+ * Resize of the selected item by handle (sx, sy) = direction of the dragged edge or corner (0 = that axis is not
+ * dragged), plus sizes typed per axis (in the display unit). Pointer `q0` → `q` in the frame of `start`.
+ */
+interface Sizing {
+  item: Item
+  start: Item
+  sx: number
+  sy: number
+  q0: Point
+  q: Point
+  alt: boolean
+  shift: boolean
+  typed: Partial<Record<Axis, string>>
+  axis: Axis // gets the typed digits
+  dragging: boolean
+  editing: boolean // typing started or a label was clicked: stays until Enter, Esc or a click
+  timer: number
+}
 const CLOSE = 8 // px; clicking this close to the first point closes a drawn polygon
 const EDGE_HIT = 6 // px; double-clicking this close to a polygon edge inserts a point
 
@@ -42,10 +67,12 @@ type Drag =
   | { mode: 'rotate'; item: Item }
   | { mode: 'notch'; item: Item; index: number }
   | { mode: 'vertex'; item: Item; index: number }
+  | { mode: 'resize' }
   | { mode: 'pan'; x: number; y: number; cx: number; cy: number; scale: number }
 
 /**
  * Top view: drag items to move, drag the handle to rotate (Shift snaps to 15°); lines carry hover help (data-tip).
+ * Edge and corner handles resize (Alt: from the centre, Shift: keep proportions); typing sets the size exactly.
  * Wheel zooms at the pointer, dragging the background (or with the middle button) pans, double-click resets the view.
  * Polygons: drawn point by point (startDrawing), corners of the selected one can be dragged, inserted
  * (double-click near an edge) and deleted (deleteVertex).
@@ -67,13 +94,27 @@ export class View2D {
   private last: Parameters<View2D['render']> | null = null
   private drawing: Point[] | null = null
   private vertex: number | null = null // corner of the selected polygon that was clicked last
+  private sizing: Sizing | null = null
+  private labels = document.createElement('div')
 
   constructor(host: HTMLElement, private ctl: View2DHost) {
-    host.append(this.svg)
+    this.labels.className = 'size-labels'
+    host.append(this.svg, this.labels)
     this.svg.addEventListener('pointerdown', e => this.down(e))
     this.svg.addEventListener('pointermove', e => this.move(e))
-    this.svg.addEventListener('pointerup', () => (this.drag = null))
-    this.svg.addEventListener('pointercancel', () => (this.drag = null))
+    this.svg.addEventListener('pointerup', () => this.up())
+    this.svg.addEventListener('pointercancel', () => this.up())
+    // a click on a size label types into its axis, a click anywhere else accepts the typed size
+    this.labels.addEventListener('pointerdown', e => {
+      const axis = (e.target as Element).closest('[data-axis]')?.getAttribute('data-axis') as Axis | null
+      if (!axis || !this.sizing) return
+      clearTimeout(this.sizing.timer)
+      Object.assign(this.sizing, { axis, editing: true })
+      this.renderLabels()
+    })
+    addEventListener('pointerdown', e => this.sizing && !this.labels.contains(e.target as Node) && this.endSizing(true), true)
+    addEventListener('keydown', e => this.sizingKey(e), true)
+    addEventListener('keyup', e => this.sizingKey(e), true)
     this.svg.addEventListener('wheel', e => this.zoomAt(e), { passive: false })
     this.svg.addEventListener('dblclick', e => {
       if (this.drawing) return this.finishDrawing()
@@ -222,6 +263,7 @@ export class View2D {
       const h = this.handle(it)
       parts.push(`<line class="handle-line" x1="${it.x}" y1="${it.y}" x2="${h.x}" y2="${h.y}"/>`,
         `<circle data-role="rotate" data-tip="Drag to rotate · Shift snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="4"/>`)
+      parts.push(...this.resizeHandles(it))
       it.notches.forEach((n, i) => {
         const c = place([perimeterPoint(it, n.t)], it)[0]
         parts.push(`<circle data-role="notch" data-index="${i}" data-tip="Finger notch · drag along the edge" class="handle notch" cx="${c.x}" cy="${c.y}" r="3"/>`)
@@ -238,6 +280,7 @@ export class View2D {
         `<circle class="handle" cx="${first.x}" cy="${first.y}" r="3" data-tip="Click to close the polygon"/>`)
     }
     this.svg.innerHTML = parts.join('')
+    this.renderLabels()
   }
 
   /** Small SVG of one layer piece for the layer strip, framed like the unzoomed top view. */
@@ -253,7 +296,145 @@ export class View2D {
   }
 
   private handle(it: Item) {
-    return place([{ x: 0, y: -(itemSize(it)[1] / 2 + it.fit + HANDLE) }], it)[0]
+    const b = itemBox(it)
+    return place([{ x: b.x, y: b.y - b.w / 2 - it.fit - HANDLE }], it)[0]
+  }
+
+  /**
+   * Resize handles on the object's bounding box (polygons: drawn dashed, `pad` px outside so its corners stay free):
+   * corners and edge midpoints, round shapes only the edges. Each edge can also be grabbed along its length (round
+   * shapes: the quarter of the outline around it).
+   */
+  private resizeHandles(it: Item, pad = 6) {
+    const b = itemBox(it), round = it.shape === 'cylinder' || it.shape === 'sphere'
+    const gap = it.shape === 'polygon' ? pad * this.unitsPerPixel() : 0
+    const at = (sx: number, sy: number) => ({ x: b.x + sx * (b.l / 2 + gap), y: b.y + sy * (b.w / 2 + gap) })
+    const d = (pts: Point[], close = false) => 'M' + place(pts, it).map(p => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join('L') + (close ? 'Z' : '')
+    const tip = 'Drag to resize · Alt: from the centre · Shift: keep proportions · type a number for an exact size'
+    const parts = it.shape === 'polygon' ? [`<path class="bbox" d="${d([at(-1, -1), at(1, -1), at(1, 1), at(-1, 1)], true)}"/>`] : []
+    const squares: string[] = []
+    for (const [sx, sy] of [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]) {
+      const corner = sx && sy
+      if (corner && round) continue
+      const dir = (Math.atan2(sy, sx) * 180) / Math.PI
+      const attrs = `data-role="resize" data-sx="${sx}" data-sy="${sy}" data-tip="${tip}" style="cursor:${CURSORS[(((Math.round((dir + it.rot) / 45)) % 4) + 4) % 4]}-resize"`
+      if (!corner) {
+        const strip = round
+          ? Array.from({ length: 19 }, (_, i) => {
+              const a = ((dir - 45 + i * 5) * Math.PI) / 180
+              return { x: (Math.cos(a) * b.l) / 2, y: (Math.sin(a) * b.w) / 2 }
+            })
+          : [at(sx || -1, sy || -1), at(sx || 1, sy || 1)]
+        parts.push(`<path class="hit" ${attrs} d="${d(strip)}"/>`)
+      }
+      const c = place([at(sx, sy)], it)[0]
+      squares.push(`<rect class="handle resize" ${attrs} x="${c.x - 2}" y="${c.y - 2}" width="4" height="4" transform="rotate(${it.rot} ${c.x} ${c.y})"/>`)
+    }
+    return [...parts, ...squares]
+  }
+
+  /** Size labels of the item being resized, outside its bottom (L) and right (W) edge; the typed axis is marked. */
+  private renderLabels() {
+    const s = this.sizing, ctm = this.svg.getScreenCTM()
+    if (!s || !ctm) return this.labels.replaceChildren()
+    const it = s.item, b = itemBox(it), gap = LABEL.gap * this.unitsPerPixel(), { name, mm } = this.ctl.unit()
+    const host = this.labels.getBoundingClientRect()
+    const a = (it.rot * Math.PI) / 180
+    const label = (axis: Axis, text: string, size: number, local: Point, out: Point) => {
+      const p = place([local], it)[0], c = new DOMPoint(p.x, p.y).matrixTransform(ctm)
+      // outward direction on screen; shifts the label so it sits beside the edge, not on it
+      const ux = out.x * Math.cos(a) - out.y * Math.sin(a), uy = out.x * Math.sin(a) + out.y * Math.cos(a), k = Math.max(Math.abs(ux), Math.abs(uy))
+      const typed = s.typed[axis]
+      const el = document.createElement('div')
+      el.className = `size-label${axis === s.axis ? ' active' : ''}`
+      el.textContent = `${text} ${typed === undefined ? (size / mm).toFixed(2) : `${typed}▏`}${name}`
+      el.style.cssText = `left:${c.x - host.left}px;top:${c.y - host.top}px;transform:translate(${-50 + (50 * ux) / k}%,${-50 + (50 * uy) / k}%)`
+      Object.assign(el.dataset, { axis, tip: 'Click and type a size · Tab: other side · Enter or click: accept · Esc: undo the resize' })
+      return el
+    }
+    this.labels.replaceChildren(
+      label('x', 'L', b.l, { x: b.x, y: b.y + b.w / 2 + it.fit + gap }, { x: 0, y: 1 }),
+      label('y', it.shape === 'lying' ? 'Ø' : 'W', b.w, { x: b.x + b.l / 2 + it.fit + gap, y: b.y }, { x: 1, y: 0 }),
+    )
+  }
+
+  private up() {
+    this.drag = null
+    const s = this.sizing
+    if (!s?.dragging) return
+    s.dragging = false
+    if (!s.editing) s.timer = setTimeout(() => this.endSizing(true), LABEL.ms)
+  }
+
+  /** Ends the resize: keeps the new size, or restores the one from before. */
+  private endSizing(accept: boolean) {
+    const s = this.sizing
+    if (!s) return
+    clearTimeout(s.timer)
+    this.sizing = null
+    if (s.dragging) this.drag = null
+    if (accept) return this.rerender()
+    Object.assign(s.item, structuredClone(s.start))
+    this.ctl.change()
+  }
+
+  /**
+   * Keys while resizing: digits type the size of the marked axis, Tab switches it, Enter accepts, Esc undoes,
+   * Shift / Alt switch the drag mode; other keys accept and keep their usual meaning.
+   */
+  private sizingKey(e: KeyboardEvent) {
+    const s = this.sizing
+    if (!s) return
+    if (e.key === 'Meta' || e.key === 'Control' || e.key === 'CapsLock') return
+    if (e.key === 'Shift' || e.key === 'Alt') {
+      e.preventDefault() // Alt would open the browser menu on some systems
+      if (!s.dragging) return
+      Object.assign(s, { shift: e.shiftKey, alt: e.altKey })
+      return this.resize()
+    }
+    if (e.type === 'keyup') return
+    const typed = s.typed[s.axis]
+    if (/^[\d.,]$/.test(e.key) && !e.metaKey && !e.ctrlKey) s.typed[s.axis] = (typed ?? '') + e.key
+    else if (e.key === 'Backspace' && typed !== undefined) s.typed[s.axis] = typed.slice(0, -1) || undefined
+    else if (e.key === 'Tab') s.axis = s.axis === 'x' ? 'y' : 'x'
+    else return e.key === 'Escape' || e.key === 'Enter' ? (e.preventDefault(), e.stopPropagation(), this.endSizing(e.key === 'Enter')) : this.endSizing(true)
+    e.preventDefault()
+    e.stopPropagation()
+    clearTimeout(s.timer)
+    s.editing = true
+    this.resize()
+  }
+
+  /**
+   * Applies the size from the pointer and the typed values: snapped to the grid step, the opposite edge staying put
+   * (Alt: the centre), proportional with Shift (set by the typed axis, else by the dragged one that changed most).
+   */
+  private resize() {
+    const s = this.sizing!, st = s.start, it = s.item, b = itemBox(st)
+    const step = this.snap ? this.snapStep : 0.1, mm = this.ctl.unit().mm
+    const full = { x: b.l, y: b.w }, dir = { x: s.sx, y: s.sy }
+    const typed = (axis: Axis) => {
+      const v = parseFloat(s.typed[axis]?.replace(',', '.') ?? '')
+      return Number.isFinite(v) ? Math.max(0.1, v * mm) : undefined
+    }
+    const t = { x: typed('x'), y: typed('y') }
+    const raw = (axis: Axis) => full[axis] + (s.alt ? 2 : 1) * dir[axis] * (s.q[axis] - s.q0[axis])
+    const sized = (axis: Axis) => t[axis] ?? (dir[axis] ? Math.max(step, round(raw(axis), step)) : full[axis])
+    let size = { x: sized('x'), y: sized('y') }
+    if (s.shift) {
+      const change = (axis: Axis) => (dir[axis] ? Math.abs(raw(axis) / (full[axis] || 1) - 1) : -1)
+      const lead: Axis = t.x !== undefined ? 'x' : t.y !== undefined ? 'y' : change('x') >= change('y') ? 'x' : 'y'
+      const k = full[lead] ? size[lead] / full[lead] : 1
+      size = lead === 'x' ? { x: size.x, y: full.y * k } : { x: full.x * k, y: size.y }
+    }
+    // the box centre moves by half the growth towards the dragged side (not at all with Alt or on undragged axes)
+    const grow = (axis: Axis) => (s.alt ? 0 : (dir[axis] * (size[axis] - full[axis])) / 2)
+    const offset = place([{ x: grow('x'), y: grow('y') }], { ...st, x: 0, y: 0 })[0]
+    const before = this.constrain ? this.ctl.violation(it) : 0, prev = structuredClone(it)
+    Object.assign(it, structuredClone(st), { x: st.x + offset.x, y: st.y + offset.y })
+    setItemSize(it, size.x, size.y)
+    if (this.constrain && this.ctl.violation(it) > before + AREA_TOL) Object.assign(it, prev)
+    this.ctl.change()
   }
 
   private point(e: MouseEvent) {
@@ -287,6 +468,12 @@ export class View2D {
       this.drag = { mode: 'pan', x: e.clientX, y: e.clientY, cx: this.center.x, cy: this.center.y, scale: 1 / this.svg.getScreenCTM()!.a }
     } else if (role === 'rotate' && this.selected) {
       this.drag = { mode: 'rotate', item: this.selected }
+    } else if (role === 'resize' && this.selected) {
+      const it = this.selected, sx = Number(target.getAttribute('data-sx')), sy = Number(target.getAttribute('data-sy'))
+      const q = this.toLocal(it, this.point(e))
+      this.sizing = { item: it, start: structuredClone(it), sx, sy, q0: q, q, alt: e.altKey, shift: e.shiftKey, typed: {}, axis: sx ? 'x' : 'y', dragging: true, editing: false, timer: 0 }
+      this.drag = { mode: 'resize' }
+      this.renderLabels()
     } else if (role === 'notch' && this.selected) {
       this.drag = { mode: 'notch', item: this.selected, index: Number(target.getAttribute('data-index')) }
     } else if (role === 'vertex' && this.selected) {
@@ -330,6 +517,11 @@ export class View2D {
     if (d.mode === 'pan') {
       this.center = { x: d.cx - (e.clientX - d.x) * d.scale, y: d.cy - (e.clientY - d.y) * d.scale }
       return this.rerender()
+    }
+    if (d.mode === 'resize') {
+      this.sizing!.q = this.toLocal(this.sizing!.start, this.point(e))
+      Object.assign(this.sizing!, { shift: e.shiftKey, alt: e.altKey })
+      return this.resize()
     }
     const p = this.point(e), it = d.item
     if (d.mode === 'notch') {

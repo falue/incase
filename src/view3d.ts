@@ -46,10 +46,10 @@ function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Pl
   const r = it.d / 2
   const geo =
     it.shape === 'box' ? new THREE.BoxGeometry(it.l, it.h, it.w)
-    : it.shape === 'cylinder' ? new THREE.CylinderGeometry(r, r, it.h, 48)
+    : it.shape === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, it.h, 48).scale(it.d, 1, it.d2)
     : it.shape === 'lying' ? new THREE.CylinderGeometry(r, r, it.l, 48).rotateZ(Math.PI / 2)
     : it.shape === 'polygon' ? polygonGeometry(it)
-    : new THREE.SphereGeometry(r, 48, 24)
+    : new THREE.SphereGeometry(0.5, 48, 24).scale(it.d, itemHeight(it), it.d2)
   // the polygon offset keeps its bottom face in front of the foam top it stands on (no z-fighting)
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
     color, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide, clippingPlanes,

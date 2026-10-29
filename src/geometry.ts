@@ -7,10 +7,10 @@ const EPS = 1e-6
 const segments = (r: number, angle: number) => Math.max(3, Math.ceil(angle / (2 * Math.acos(Math.max(0, 1 - TOL / r)))))
 
 // All shapes run in the same rotational direction so NonZero unions never cancel out.
-export function circle(r: number): PathD | null {
-  if (r <= 0) return null
-  const n = Math.max(12, segments(r, 2 * Math.PI))
-  return Array.from({ length: n }, (_, i) => ({ x: r * Math.cos((2 * Math.PI * i) / n), y: r * Math.sin((2 * Math.PI * i) / n) }))
+export function ellipse(rx: number, ry = rx): PathD | null {
+  if (rx <= 0 || ry <= 0) return null
+  const n = Math.max(12, segments(Math.max(rx, ry), 2 * Math.PI))
+  return Array.from({ length: n }, (_, i) => ({ x: rx * Math.cos((2 * Math.PI * i) / n), y: ry * Math.sin((2 * Math.PI * i) / n) }))
 }
 
 /** `perCorner` fixes the arc segment count (for lofting); by default it follows the chord tolerance. */
@@ -54,21 +54,22 @@ export function itemCuts(it: Item, a: number, z = it.z): PathsD {
   if (a < z + itemHeight(it) - EPS) {
     let shape: PathD | null
     if (it.shape === 'box') shape = roundedRect(it.l + 2 * c, it.w + 2 * c, it.r + c)
-    else if (it.shape === 'cylinder') shape = circle(it.d / 2 + c)
+    // ovals grow by c on both radii: close to (and for circles exactly) the outline offset by c
+    else if (it.shape === 'cylinder') shape = ellipse(it.d / 2 + c, it.d2 / 2 + c)
     else if (it.shape === 'polygon') {
       out.push(...polygonCut(it.pts, it.r, c))
       shape = null
     }
     else {
       // full width above the centre, below it the widest section is at the slab top
-      const r = it.d / 2
+      const r = itemHeight(it) / 2
       const dz = Math.max(0, a - (z + r))
-      const half = Math.sqrt(Math.max(0, r * r - dz * dz))
-      shape = it.shape === 'sphere' ? circle(half + c) : roundedRect(it.l + 2 * c, 2 * (half + c), 0)
+      const k = r > 0 ? Math.sqrt(Math.max(0, 1 - (dz * dz) / (r * r))) : 0 // section size relative to the widest
+      shape = it.shape === 'sphere' ? ellipse((k * it.d) / 2 + c, (k * it.d2) / 2 + c) : roundedRect(it.l + 2 * c, k * it.d + 2 * c, 0)
     }
     if (shape) out.push(shape)
   }
-  const notch = a < it.notchDepth - EPS && it.notches.length ? circle(it.notchD / 2) : null
+  const notch = a < it.notchDepth - EPS && it.notches.length ? ellipse(it.notchD / 2) : null
   if (notch) {
     for (const n of it.notches) {
       const c = perimeterPoint(it, n.t)

@@ -2,9 +2,9 @@ import { areaPathsD, differenceD, FillRule, getBoundsPathsD, minkowskiSumD, simp
 import { caseOutline, itemCuts, offset, wallConflicts, stackTotal } from './geometry'
 import type { Item, Project } from './model'
 
-// notches and polygons are asymmetric; boxes repeat after 180°, round shapes never change
+// notches and polygons are asymmetric; boxes and ovals repeat after 180°, round shapes never change
 const rotations = (it: Item) =>
-  it.notches.length || it.shape === 'polygon' ? [0, 90, 180, 270] : it.shape === 'box' || it.shape === 'lying' ? [0, 90] : [it.rot]
+  it.notches.length || it.shape === 'polygon' ? [0, 90, 180, 270] : it.shape === 'box' || it.shape === 'lying' || it.d !== it.d2 ? [0, 90] : [it.rot]
 const SIMPLIFY = 0.3 // mm; keeps the search fast, covered by MARGIN
 const MARGIN = 0.5 // mm added to every gap
 const SPREAD = { simplify: 0.5, maxStep: 16, minStep: 0.25, passes: 10 } // mm; even spreading

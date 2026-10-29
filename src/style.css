@@ -232,6 +232,10 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 #view2d .item.selected { fill: rgba(61, 139, 255, 0.3); stroke: var(--accent); stroke-width: 2px; }
 #view2d .layer { fill: none; stroke-width: 1.5px; vector-effect: non-scaling-stroke; pointer-events: none; }
 #view2d .name { font-size: 6px; text-anchor: middle; dominant-baseline: middle; fill: var(--ink); pointer-events: none; }
+#view2d .bbox { fill: none; stroke: var(--accent); stroke-width: 1px; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+#view2d .size-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+#view2d .size-label { position: absolute; padding: 2px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: auto; cursor: text; }
+#view2d .size-label.active { border-color: var(--accent); }
 #view2d .handle-line { stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
 #view2d .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
 #view2d .hit { fill: none; stroke: transparent; stroke-width: 10px; vector-effect: non-scaling-stroke; pointer-events: stroke; }
