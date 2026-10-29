@@ -291,6 +291,9 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 .presets { position: absolute; z-index: 6; left: 0; right: 0; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); cursor: default; }
 .presets[hidden] { display: none; }
 .preset-list { max-height: 280px; overflow-y: auto; margin-top: 4px; }
+.preset .web { display: flex; color: var(--muted); }
+.preset .web:hover { color: var(--accent); }
+.preset .web svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; }
 .preset { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }
 .preset:hover, .preset.active { background: var(--selected); }
 /* red dot: value unknown for the chosen preset */

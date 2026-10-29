@@ -57,6 +57,7 @@ const ICONS = {
   pack: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="5" rx="1"/><rect x="13" y="10" width="8" height="11" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
   redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/>',
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
 const MM_PER_IN = 25.4
@@ -296,7 +297,8 @@ function presetPicker() {
   const search = h('input', { type: 'text', className: 'grow', placeholder: 'Search, e.g. Peli 1500 or 600×400' })
   withTip(search, 'Fills in the case from a preset. Peli is a trademark of Pelican Products, Inc.; RAKO of Georg Utz; not affiliated')
   const list = h('div', { className: 'preset-list' })
-  type Entry = { label: string; hint: string; pick: () => void; remove?: () => void }
+  type Entry = { label: string; hint: string; pick: () => void; remove?: () => void; web?: string }
+  const SEARCH_AS: Record<string, string> = { Peli: 'pelicase' } // brand as people search for it
   let entries: Entry[] = []
   let active = 0
   let brand: string | null = null // brand whose models are listed while the search is empty
@@ -315,6 +317,7 @@ function presetPicker() {
     hint: p.user ? 'yours' : p.group,
     pick: () => apply(p),
     remove: p.user ? () => (saveUserPresets(userPresets().filter(u => u.name !== p.name)), show()) : undefined,
+    web: p.user ? undefined : `https://www.google.com/search?${new URLSearchParams({ q: `${SEARCH_AS[p.group] ?? p.group} ${p.name}` })}`,
   })
   const open = (b: string | null) => () => {
     brand = b
@@ -336,10 +339,11 @@ function presetPicker() {
     list.replaceChildren(...entries.map((entry, i) => {
       const row = h('div', { className: 'preset' + (i === active ? ' active' : '') },
         h('span', { className: 'grow', textContent: entry.label }),
-        h('span', { className: 'hint', textContent: entry.hint }))
+        h('span', { className: 'hint', textContent: entry.hint }),
+        ...(entry.web ? [h('a', { className: 'web', href: entry.web, target: '_blank', rel: 'noopener', innerHTML: icon('globe'), tip: 'Search the web for this case' })] : []))
       row.onmousedown = e => {
         e.preventDefault() // keep the field focused so the popup stays open
-        if (!(e.target as Element).closest('.remove')) entry.pick()
+        if (!(e.target as Element).closest('.remove, .web')) entry.pick()
       }
       if (entry.remove) {
         row.append(Object.assign(h('button', { className: 'icon remove', textContent: '✕', tip: 'Delete this preset' }), {
