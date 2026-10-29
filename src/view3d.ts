@@ -113,7 +113,7 @@ function lidShell(box: CaseDims) {
 }
 
 export class View3D {
-  /** Extra vertical gap between layers in mm; the bottom layer stays on the floor. */
+  /** Extra vertical gap between layers, 0–1; at 1 it is half the longer case side; the bottom layer stays on the floor. */
   explode = 0
   private accent = '#3d8bff' // set by setTheme
   private renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -327,7 +327,8 @@ export class View3D {
     this.content.clear()
 
     const foamTop = p.box.depth - stackTotal(p)
-    const shift = (i: number) => (layers.length - 1 - i) * this.explode
+    const gap = this.explode ** 2 * Math.max(this.extent.x, this.extent.y) // squared: fine control at small gaps
+    const shift = (i: number) => (layers.length - 1 - i) * gap
     this.slabs = []
     for (const layer of layers) {
       let tree = layer.tree

@@ -272,11 +272,11 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 #stack .range { text-align: right; font-variant-numeric: tabular-nums; }
 #view2d .object-outline { fill: none; stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
 
-/* presets: the last cell of the Case fields; opens a search field with a list */
+/* presets: a cell of the Case fields; opens a search field with a list */
 .preset-picker { position: static; }
 .props { position: relative; } /* the presets popup spans the field grid */
 .preset-picker > button { width: 100%; padding: 4px 7px; border: 1px solid transparent; }
-.presets { position: absolute; z-index: 6; top: calc(100% + 4px); left: 0; right: 0; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); cursor: default; }
+.presets { position: absolute; z-index: 6; left: 0; right: 0; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25); cursor: default; }
 .presets[hidden] { display: none; }
 .preset-list { max-height: 280px; overflow-y: auto; margin-top: 4px; }
 .preset { display: flex; align-items: center; gap: 8px; padding: 4px 8px; cursor: pointer; }

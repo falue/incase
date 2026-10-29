@@ -38,7 +38,7 @@
         <div id="view3d" class="view"></div>
         <div class="overlay top-left"><div class="seg" id="camera"></div><span id="fit-3d"></span></div>
         <div class="overlay bottom-left sections">
-          <label for="explode" class="wide" data-tip="Lift the layers apart; objects stay on the layer they rest on">Explode</label><input id="explode" data-tip="Lift the layers apart · double-click to reset" type="range" min="0" max="90" value="0" />
+          <label for="explode" class="wide" data-tip="Lift the layers apart; objects stay on the layer they rest on">Explode</label><input id="explode" data-tip="Lift the layers apart · double-click to reset" type="range" min="0" max="100" value="0" />
           <span data-tip="Show only a slice of the case left to right">X</span><button id="reset-x" class="icon" data-tip="Show the whole width again">↺</button>
           <span class="dual" id="section-x" data-tip="Drag the handles to cut the 3D view left / right · double-click to reset"><input type="range" min="0" max="1000" value="0" /><input type="range" min="0" max="1000" value="1000" /></span>
           <span data-tip="Show only a slice of the case front to back">Y</span><button id="reset-y" class="icon" data-tip="Show the whole depth again">↺</button>
@@ -53,7 +53,7 @@
 
     <aside id="global">
       <details open><summary>Case <small id="case-preset"></small></summary><div id="case" class="props"></div></details>
-      <!-- placed as the last cell of the Case fields by renderCase -->
+      <!-- placed among the Case fields by renderCase -->
       <span id="preset-picker" class="preset-picker"><button id="presets-button" data-tip="Fill in the case from a brand's model or one of your own">Brand presets…</button><div id="presets" class="presets" hidden></div></span>
       <details open><summary>Available materials <small>order = preference</small></summary><div id="materials"></div></details>
       <details open><summary>Stack <small id="stack-score"></small></summary><div id="stack-head"></div><div id="stack-weight" class="row" data-tip="Auto stack: how much less sinking of the objects (in mm, all added up) one more layer must bring"></div><div id="stack"></div></details>

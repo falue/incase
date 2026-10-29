@@ -364,6 +364,7 @@ function presetPicker() {
   toggle.onclick = () => {
     if (!$('presets').hidden) return search.blur() // closes it
     $('presets').hidden = false
+    $('presets').style.top = `${toggle.offsetTop + toggle.offsetHeight + 4}px` // right below the button, wherever it sits in the grid
     search.value = ''
     open(null)()
     search.focus()
@@ -1085,7 +1086,7 @@ layerDown.onclick = () => stepLayer(1)
 
 const explode = $('explode') as HTMLInputElement
 const setExplode = () => {
-  view3d.explode = explode.valueAsNumber
+  view3d.explode = explode.valueAsNumber / 100
   scheduleViews()
 }
 explode.oninput = setExplode
