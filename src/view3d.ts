@@ -19,6 +19,7 @@ const CURRENT_LINE = 5 // px, edges of the current layer
 const SHELL = '#7f8fa3' // case and lid
 const OBJECT = '#ff9a3c'
 const LID_HIT = '#ff2a2a' // part of an object above the closed lid
+const OPACITY = { strong: 0.5, faint: 0.12, editing: 0.25 } // objects; faint: where they are wanted; editing: where they sit, while Z is edited
 
 const HATCH = { mm: 4, px: 16, shade: 0.6 } // section faces: stripe spacing, texture tile size, colour factor
 let hatchTexture: THREE.CanvasTexture | null = null
@@ -93,7 +94,7 @@ function polygonGeometry(it: Item) {
 }
 
 /** `bottom` is the three y the item stands on. */
-function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Plane[]): THREE.Mesh {
+function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Plane[], opacity: number): THREE.Mesh {
   const r = it.d / 2
   const geo =
     it.shape === 'box' ? new THREE.BoxGeometry(it.l, it.h, it.w)
@@ -103,7 +104,7 @@ function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Pl
     : new THREE.SphereGeometry(0.5, 48, 24).scale(it.d, itemHeight(it), it.d2)
   // the polygon offset keeps its bottom face in front of the foam top it stands on (no z-fighting)
   const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
-    color, transparent: true, opacity: 0.5, depthWrite: false, side: THREE.DoubleSide, clippingPlanes,
+    color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide, clippingPlanes,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
   }))
   mesh.position.set(it.x, bottom + itemHeight(it) / 2, it.y)
@@ -166,7 +167,10 @@ function lidShell(box: CaseDims) {
 export class View3D {
   /** Extra vertical gap between layers, 0–1; at 1 it is half the longer case side; the bottom layer stays on the floor. */
   private explode = 0
-  private bounce = 0 // animation frame of the landing bounce
+  private landing = 0 // animation frame of the landing bounce
+  private landGap = 0 // extra gap while the layers land
+  /** The Z field is being edited: the wanted position of selected objects is shown strong, where they sit faint. */
+  private editingZ = false
   private accent = '#3d8bff' // set by setTheme
   private renderer = new THREE.WebGLRenderer({ antialias: true })
   private scene = new THREE.Scene()
@@ -361,10 +365,17 @@ export class View3D {
   setExplode(v: number) {
     const landed = v === 0 && this.explode > 0
     this.explode = v
-    cancelAnimationFrame(this.bounce)
-    this.applyExplode(this.gap())
+    cancelAnimationFrame(this.landing)
+    this.landGap = 0
+    this.applyExplode()
     this.draw()
     if (landed) this.land()
+  }
+
+  setEditingZ(on: boolean) {
+    if (on === this.editingZ) return
+    this.editingZ = on
+    if (this.last) this.update(...this.last)
   }
 
   private gap() {
@@ -376,15 +387,17 @@ export class View3D {
     const start = performance.now(), size = height * Math.max(this.extent.x, this.extent.y)
     const step = (now: number) => {
       const t = Math.min(1, (now - start) / ms)
-      this.applyExplode(size * Math.abs(Math.sin(hops * Math.PI * t)) * (1 - t) ** 2)
+      this.landGap = size * Math.abs(Math.sin(hops * Math.PI * t)) * (1 - t) ** 2
+      this.applyExplode()
       this.draw()
-      if (t < 1) this.bounce = requestAnimationFrame(step)
+      if (t < 1) this.landing = requestAnimationFrame(step)
     }
-    this.bounce = requestAnimationFrame(step)
+    this.landing = requestAnimationFrame(step)
   }
 
-  /** Lifts every built object by its steps of `gap`, the lid split planes of objects along with them. */
-  private applyExplode(gap: number) {
+  /** Lifts every built object by its steps of the gap, the lid split planes of objects along with them. */
+  private applyExplode() {
+    const gap = this.gap() + this.landGap
     for (const o of this.content.children) {
       const { steps, lid, y0 } = o.userData as { steps?: number; lid?: [THREE.Plane, THREE.Plane]; y0: number }
       if (steps === undefined) continue
@@ -449,25 +462,29 @@ export class View3D {
       )
       if (layer.index === current) edges.dispose()
     }
+    const wanted: THREE.Mesh[] = [] // selected objects also where their Z asks for, if they sink or rise from there
     this.ghosts = p.items.flatMap(it => {
       // the item stands on (and explodes with) the layer below its cut, or on the case floor; a group moves with its deepest member
       const { z } = resting(p, it), h = itemHeight(it)
       const { layer } = resting(p, deepest(groupOf(p, it)))
       const bottom = -(foamTop + z + h), n = layer >= 0 ? steps(layer) : 0
-      const color = selection.includes(it.id) ? this.accent : OBJECT
+      const selected = selection.includes(it.id), color = selected ? this.accent : OBJECT
+      const moved = selected && Math.abs(z - it.z) > 0.01
+      if (moved) wanted.push(lifted(ghost(it, -(foamTop + it.z + h), color, planes, this.editingZ ? OPACITY.strong : OPACITY.faint), n))
+      const opacity = moved && this.editingZ ? OPACITY.editing : OPACITY.strong
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
-      if (excess <= 0) return [lifted(ghost(it, bottom, color, planes), n)]
+      if (excess <= 0) return [lifted(ghost(it, bottom, color, planes, opacity), n)]
       // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
       const lid = bottom + h - excess
       const below = new THREE.Plane(new THREE.Vector3(0, -1, 0), lid), above = new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)
       return [
-        lifted(ghost(it, bottom, color, [...planes, below]), n, [below, above]),
-        lifted(ghost(it, bottom, LID_HIT, [...planes, above]), n),
+        lifted(ghost(it, bottom, color, [...planes, below], opacity), n, [below, above]),
+        lifted(ghost(it, bottom, LID_HIT, [...planes, above], opacity), n),
       ]
     })
     const shell = [...caseShell(p.box), ...(p.box.lidDepth > 0 ? lidShell(p.box) : [])]
-    this.content.add(...this.ghosts, ...shell)
-    this.applyExplode(this.gap())
+    this.content.add(...this.ghosts, ...wanted, ...shell)
+    this.applyExplode()
 
     if (!this.box) {
       this.box = p.box

@@ -984,6 +984,7 @@ function remove(items: Item[]) {
 
 function renderSelection() {
   const it = selected(), members = selectedGroup()
+  view3d.setEditingZ(false) // the Z field being edited is replaced
   $('selection-section').hidden = !selection.length
   if (members) return renderGroup(members)
   if (selection.length > 1) {
@@ -1006,7 +1007,7 @@ function renderSelection() {
       prop('Name', text(() => it.name, v => (it.name = v), 'items'), '', 'wide'),
       prop('Shape', shape, 'Shape of the object; sizes are kept when switching', 'wide'),
       ...dims.filter(([, k]) => k !== 'r').map(dimProp),
-      prop('Z from top', len(() => it.z, v => (it.z = v)), "How far below the foam top the object's top sits; the cut stays open above it"),
+      zField(len(() => it.z, v => (it.z = v)), "How far below the foam top the object's top should sit; it sinks to the next layer boundary below (faint in 3D: where it should sit, strong while editing this)"),
       prop('X', len(() => it.x, v => (it.x = v)), "Position of the object's centre, right of the case centre"),
       prop('Y', len(() => it.y, v => (it.y = v)), "Position of the object's centre, below the case centre (top view)"),
       prop('Rotation °', num(() => it.rot, v => (it.rot = v)), 'Rotation in the top view, clockwise'),
@@ -1026,6 +1027,18 @@ function renderSelection() {
     ),
     it.notches.length ? h('p', { className: 'hint', textContent: 'Drag the dots in the top view to move notches along the edge; Ctrl snaps them to the standard positions.' }) : '',
   )
+}
+
+/** "Z from top"; while it is edited (focused or scrubbed), the 3D view shows the wanted position strong. */
+function zField(el: HTMLInputElement, tip: string) {
+  const field = prop('Z from top', el, tip)
+  el.addEventListener('focus', () => view3d.setEditingZ(true))
+  el.addEventListener('blur', () => view3d.setEditingZ(false))
+  field.addEventListener('pointerdown', () => {
+    view3d.setEditingZ(true)
+    addEventListener('pointerup', () => document.activeElement !== el && view3d.setEditingZ(false), { once: true })
+  })
+  return field
 }
 
 /** Position, depth and rotation of a whole group; it turns about its first member's centre. */
@@ -1048,7 +1061,7 @@ function renderGroup(members: Item[]) {
     h('div', { className: 'props' },
       prop('X', len(() => centre().x, v => shift(v - centre().x, 0, 0)), "Centre of the group's outlines, right of the case centre"),
       prop('Y', len(() => centre().y, v => shift(0, v - centre().y, 0)), "Centre of the group's outlines, below the case centre (top view)"),
-      prop('Z from top', len(top, v => shift(0, 0, v - top())), 'How far below the foam top the highest member sits; the group sinks as one, by its deepest member'),
+      zField(len(top, v => shift(0, 0, v - top())), 'How far below the foam top the highest member should sit; the group sinks as one, by its deepest member (faint in 3D: where it should sit, strong while editing this)'),
       prop('Rotation °', num(() => pivot.rot, v => turn(v - pivot.rot)), `Rotation in the top view, clockwise, about the centre of ${pivot.name}`),
     ),
     h('div', { className: 'row' }, button('Ungroup', 'Members move on their own again (⇧⌘G)', ungroup)),
