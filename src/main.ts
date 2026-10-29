@@ -861,7 +861,7 @@ function renderSelection() {
       prop('Depth', size(() => it.notchDepth, v => ((it.notchDepth = v), remember(it))), 'How deep the notches go, measured from the foam top'),
       prop('Fillet R', size(() => it.notchR, v => ((it.notchR = v), remember(it))), 'Rounds the corners where notches meet the object or each other', 'wide'),
     ),
-    it.notches.length ? h('p', { className: 'hint', textContent: 'Drag the dots in the top view to move notches along the edge.' }) : '',
+    it.notches.length ? h('p', { className: 'hint', textContent: 'Drag the dots in the top view to move notches along the edge; Ctrl snaps them to the standard positions.' }) : '',
   )
 }
 
@@ -1163,11 +1163,11 @@ function updateChrome() {
   undoTool.disabled = !history.canUndo
   redoTool.disabled = !history.canRedo
   $('hint').textContent = exporting
-    ? 'Drag a piece to move it, also onto another sheet · drag its handle to turn it (Shift 15°), double-click or R by 90° · Re-pack lays all out again · ⌘Z undo · Esc back to the design'
+    ? 'Drag a piece to move it, also onto another sheet · drag its handle to turn it (Ctrl 15°), double-click or R by 90° · Re-pack lays all out again · ⌘Z undo · Esc back to the design'
     : view2d.isDrawing
     ? 'Click to add corners · click the first one, double-click or Enter to finish · Backspace removes the last · Esc cancels'
     : it
-    ? 'Drag to move · drag handle to rotate (Shift 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
+    ? 'Drag to move · Ctrl snaps · drag handle to rotate (Ctrl 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
     : 'B C L S add · Tab next object under the click · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
 }
 

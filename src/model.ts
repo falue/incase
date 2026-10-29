@@ -173,6 +173,17 @@ export function setNotchCount(it: Item, count: number) {
   }
 }
 
+/**
+ * The standard notch position closest to t: eighths of the outline (where new notches go: bottom, top, sides,
+ * halfway between), on round items with 3+ notches also their even spread.
+ */
+export function snapNotch(it: Item, t: number) {
+  const n = it.notches.length, round = it.shape === 'sphere' || it.shape === 'cylinder'
+  const stops = [...Array.from({ length: 8 }, (_, i) => i / 8), ...(round && n >= 3 ? Array.from({ length: n }, (_, i) => i / n) : [])]
+  const gap = (s: number) => Math.min(Math.abs(s - t), 1 - Math.abs(s - t))
+  return stops.reduce((best, s) => (gap(s) < gap(best) ? s : best))
+}
+
 /** True if cost `a` beats `b`, comparing entries in order. */
 const cheaper = (a: number[], b: number[]) => {
   const k = a.findIndex((v, i) => v !== b[i])

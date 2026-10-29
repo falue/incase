@@ -24,7 +24,7 @@ type Drag =
 
 /**
  * The stock sheets with their pieces, fitted into the view. Click a piece to select it; drag it to move it, also onto
- * another sheet of its material (an empty spare one is offered); drag its handle to turn it (Shift snaps to 15°);
+ * another sheet of its material (an empty spare one is offered); drag its handle to turn it (Ctrl snaps to 15°);
  * double-click or `rotateHovered` turns it by 90°. Pieces of materials without a sheet size and oversize pieces stay put.
  */
 export class SheetView {
@@ -38,6 +38,7 @@ export class SheetView {
   constructor(host: HTMLElement, private ctl: SheetViewHost) {
     host.append(this.svg)
     this.svg.addEventListener('pointerdown', e => this.down(e))
+    this.svg.addEventListener('contextmenu', e => e.preventDefault()) // Ctrl+click on macOS would open it
     this.svg.addEventListener('pointermove', e => this.move(e))
     this.svg.addEventListener('pointerup', e => this.up(e))
     this.svg.addEventListener('pointercancel', () => this.cancel())
@@ -66,7 +67,7 @@ export class SheetView {
           const { cut, outlines, label: l } = pieceShapes(p, s, pc)
           const color = visibleOn(this.svg, pc.layer.material.color)
           const fixed = s.index < 0
-          const tip = fixed ? 'Placed automatically' : 'Click to select · drag to move, also onto another sheet · drag the handle to turn (Shift 15°) · double-click or R turns by 90°'
+          const tip = fixed ? 'Placed automatically' : 'Click to select · drag to move, also onto another sheet · drag the handle to turn (Ctrl 15°) · double-click or R turns by 90°'
           const cls = `piece${pc.conflict || s.oversize ? ' conflict' : ''}${fixed ? ' fixed' : ''}${pc.layer.index === this.selected ? ' selected' : ''}`
           return `<g class="${cls}" data-sheet="${i}" data-piece="${j}" data-tip="${esc(`Layer ${pc.layer.index + 1} · ${tip}`)}">`
             + `<path class="cut" stroke="${color}" fill="${color}" d="${pathData(cut)}"/>`
@@ -83,7 +84,7 @@ export class SheetView {
       const { sheet: s, piece: pc } = sel, cx = s.x + pc.x, cy = s.y + pc.y
       const h = turn([[{ x: 0, y: turnedBox(p, pc.layer, 0).top - HANDLE * upp }]], pc.rot, cx, cy)[0][0]
       parts.push(`<g id="handle"><line class="handle-line" x1="${cx}" y1="${cy}" x2="${h.x}" y2="${h.y}"/>`
-        + `<circle data-role="rotate" data-tip="Drag to turn · Shift snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="${HANDLE_R * upp}"/></g>`)
+        + `<circle data-role="rotate" data-tip="Drag to turn · Ctrl snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="${HANDLE_R * upp}"/></g>`)
     } else this.selected = null
     this.svg.innerHTML = parts.join('')
   }
@@ -157,7 +158,7 @@ export class SheetView {
     // preview: the piece and its handle turned about its origin
     const cx = d.sheet.x + d.piece.x, cy = d.sheet.y + d.piece.y
     const a = (Math.atan2(p.y - cy, p.x - cx) * 180) / Math.PI + 90
-    d.rot = (round(a, e.shiftKey ? 15 : 0.1) + 360) % 360
+    d.rot = (round(a, e.ctrlKey ? 15 : 0.1) + 360) % 360
     const t = `rotate(${d.rot - d.piece.rot} ${cx} ${cy})`
     this.pieceEl(d).setAttribute('transform', t)
     this.svg.querySelector('#handle')!.setAttribute('transform', t)

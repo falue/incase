@@ -1,6 +1,6 @@
 import { FillRule, pointInPolygonD, PointInPolygonResult, unionD, type PathsD } from 'clipper2-ts'
 import { AREA_TOL, caseOutline, itemCuts, objectOutline, offset, pathData, place, resting, type Layer } from './geometry'
-import { itemBox, perimeterParam, perimeterPoint, setItemSize, type Item, type Project } from './model'
+import { itemBox, perimeterParam, perimeterPoint, setItemSize, snapNotch, type Item, type Project } from './model'
 
 const NS = 'http://www.w3.org/2000/svg'
 const MARGIN = 30
@@ -53,6 +53,7 @@ interface Sizing {
   q: Point
   alt: boolean
   shift: boolean
+  ctrl: boolean // snaps like the snap option
   typed: Partial<Record<Axis, string>>
   axis: Axis // gets the typed digits
   dragging: boolean
@@ -71,8 +72,9 @@ type Drag =
   | { mode: 'pan'; x: number; y: number; cx: number; cy: number; scale: number }
 
 /**
- * Top view: drag items to move, drag the handle to rotate (Shift snaps to 15°); lines carry hover help (data-tip).
- * Edge and corner handles resize (Alt: from the centre, Shift: keep proportions); typing sets the size exactly.
+ * Top view: drag items to move, drag the handle to rotate; lines carry hover help (data-tip). Ctrl snaps while dragging
+ * (grid, 15°, notch positions), as the snap option does. Edge and corner handles resize (Alt: from the centre,
+ * Shift: keep proportions); typing sets the size exactly.
  * Wheel zooms at the pointer, dragging the background (or with the middle button) pans, double-click resets the view.
  * Polygons: drawn point by point (startDrawing), corners of the selected one can be dragged, inserted
  * (double-click near an edge) and deleted (deleteVertex).
@@ -95,13 +97,21 @@ export class View2D {
   private drawing: Point[] | null = null
   private vertex: number | null = null // corner of the selected polygon that was clicked last
   private sizing: Sizing | null = null
+  // the last resize of the selected item: typing a number resizes it again, until the selection changes
+  private resumable: Pick<Sizing, 'item' | 'sx' | 'sy' | 'alt' | 'shift' | 'axis'> | null = null
+  private hover: { x: number; y: number } | null = null // pointer over the view (client px), for Tab on stacked handles
+  private raised: string | null = null // selector of the handle Tab brought to the top
   private labels = document.createElement('div')
 
   constructor(host: HTMLElement, private ctl: View2DHost) {
     this.labels.className = 'size-labels'
     host.append(this.svg, this.labels)
     this.svg.addEventListener('pointerdown', e => this.down(e))
-    this.svg.addEventListener('pointermove', e => this.move(e))
+    this.svg.addEventListener('pointermove', e => {
+      this.hover = { x: e.clientX, y: e.clientY }
+      this.move(e)
+    })
+    this.svg.addEventListener('pointerleave', () => (this.hover = null))
     this.svg.addEventListener('pointerup', () => this.up())
     this.svg.addEventListener('pointercancel', () => this.up())
     // a click on a size label types into its axis, a click anywhere else accepts the typed size
@@ -115,6 +125,7 @@ export class View2D {
     addEventListener('pointerdown', e => this.sizing && !this.labels.contains(e.target as Node) && this.endSizing(true), true)
     addEventListener('keydown', e => this.sizingKey(e), true)
     addEventListener('keyup', e => this.sizingKey(e), true)
+    this.svg.addEventListener('contextmenu', e => e.preventDefault()) // Ctrl+click on macOS would open it
     this.svg.addEventListener('wheel', e => this.zoomAt(e), { passive: false })
     this.svg.addEventListener('dblclick', e => {
       if (this.drawing) return this.finishDrawing()
@@ -194,8 +205,8 @@ export class View2D {
     return { x: dx * Math.cos(a) + dy * Math.sin(a), y: -dx * Math.sin(a) + dy * Math.cos(a) }
   }
 
-  private snapped(p: Point): Point {
-    const step = this.snap ? this.snapStep : 0.1
+  private snapped(p: Point, ctrl: boolean): Point {
+    const step = this.snap || ctrl ? this.snapStep : 0.1
     return { x: round(p.x, step), y: round(p.y, step) }
   }
 
@@ -212,7 +223,7 @@ export class View2D {
     this.selected = items.find(it => it.id === selectedId) ?? null
 
     const outline = (z: number) => pathData([caseOutline(b, z, z) ?? []])
-    const grid = this.snap ? this.snapStep : 10 // drawn grid: the snap grid while snapping
+    const grid = this.snapStep // the snap grid, also what Ctrl snaps to
     const parts = [
       `<defs><pattern id="grid" width="${grid}" height="${grid}" patternUnits="userSpaceOnUse"><path d="M${grid} 0H0V${grid}" class="gridline"/></pattern></defs>`,
       `<rect x="-10000" y="-10000" width="20000" height="20000" fill="url(#grid)"/>`,
@@ -262,11 +273,11 @@ export class View2D {
       const it = this.selected
       const h = this.handle(it)
       parts.push(`<line class="handle-line" x1="${it.x}" y1="${it.y}" x2="${h.x}" y2="${h.y}"/>`,
-        `<circle data-role="rotate" data-tip="Drag to rotate · Shift snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="4"/>`)
+        `<circle data-role="rotate" data-tip="Drag to rotate · Ctrl snaps to 15°" class="handle" cx="${h.x}" cy="${h.y}" r="4"/>`)
       parts.push(...this.resizeHandles(it))
       it.notches.forEach((n, i) => {
         const c = place([perimeterPoint(it, n.t)], it)[0]
-        parts.push(`<circle data-role="notch" data-index="${i}" data-tip="Finger notch · drag along the edge" class="handle notch" cx="${c.x}" cy="${c.y}" r="3"/>`)
+        parts.push(`<circle data-role="notch" data-index="${i}" data-tip="Finger notch · drag along the edge · Ctrl snaps to the standard positions · Tab: the handle below" class="handle notch" cx="${c.x}" cy="${c.y}" r="3"/>`)
       })
       if (it.shape === 'polygon') {
         place(it.pts, it).forEach((c, i) => parts.push(
@@ -280,6 +291,8 @@ export class View2D {
         `<circle class="handle" cx="${first.x}" cy="${first.y}" r="3" data-tip="Click to close the polygon"/>`)
     }
     this.svg.innerHTML = parts.join('')
+    if (this.raised) this.svg.append(...this.svg.querySelectorAll(this.raised))
+    if (this.resumable && this.resumable.item !== this.selected) this.resumable = null
     this.renderLabels()
   }
 
@@ -310,7 +323,7 @@ export class View2D {
     const gap = it.shape === 'polygon' ? pad * this.unitsPerPixel() : 0
     const at = (sx: number, sy: number) => ({ x: b.x + sx * (b.l / 2 + gap), y: b.y + sy * (b.w / 2 + gap) })
     const d = (pts: Point[], close = false) => 'M' + place(pts, it).map(p => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join('L') + (close ? 'Z' : '')
-    const tip = 'Drag to resize · Alt: from the centre · Shift: keep proportions · type a number for an exact size'
+    const tip = 'Drag to resize · Alt: from the centre · Shift: keep proportions · Ctrl: snap to the grid · type a number for an exact size · Tab: the handle below'
     const parts = it.shape === 'polygon' ? [`<path class="bbox" d="${d([at(-1, -1), at(1, -1), at(1, 1), at(-1, 1)], true)}"/>`] : []
     const squares: string[] = []
     for (const [sx, sy] of [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]]) {
@@ -358,6 +371,18 @@ export class View2D {
     )
   }
 
+  /** Tab over overlapping handles: brings the lowest one to the top; false if there is no overlap. */
+  private raiseHandle() {
+    if (!this.hover) return false
+    const keys = [...new Set(document.elementsFromPoint(this.hover.x, this.hover.y)
+      .filter(el => this.svg.contains(el) && el.getAttribute('data-role'))
+      .map(el => ['role', 'index', 'sx', 'sy'].map(a => el.getAttribute(`data-${a}`) === null ? '' : `[data-${a}="${el.getAttribute(`data-${a}`)}"]`).join('')))]
+    if (keys.length < 2) return false
+    this.raised = keys.at(-1)!
+    this.svg.append(...this.svg.querySelectorAll(this.raised))
+    return true
+  }
+
   private up() {
     this.drag = null
     const s = this.sizing
@@ -372,6 +397,7 @@ export class View2D {
     if (!s) return
     clearTimeout(s.timer)
     this.sizing = null
+    this.resumable = { item: s.item, sx: s.sx, sy: s.sy, alt: s.alt, shift: s.shift, axis: s.axis }
     if (s.dragging) this.drag = null
     if (accept) return this.rerender()
     Object.assign(s.item, structuredClone(s.start))
@@ -380,16 +406,26 @@ export class View2D {
 
   /**
    * Keys while resizing: digits type the size of the marked axis, Tab switches it, Enter accepts, Esc undoes,
-   * Shift / Alt switch the drag mode; other keys accept and keep their usual meaning.
+   * Shift / Alt / Ctrl switch the drag mode; other keys accept and keep their usual meaning. Without a resize, a digit
+   * resumes the last one of the selected item, and Tab over stacked handles brings the lowest one to the top.
    */
   private sizingKey(e: KeyboardEvent) {
+    const field = e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement || e.target instanceof HTMLTextAreaElement
+    const shown = this.svg.getBoundingClientRect().width > 0
+    if (!this.sizing && e.type === 'keydown' && !field && shown && !e.metaKey && !e.ctrlKey) {
+      if (e.key === 'Tab' && this.raiseHandle()) return (e.preventDefault(), e.stopPropagation())
+      if (/^[\d.,]$/.test(e.key) && this.resumable?.item === this.selected) {
+        const r = this.resumable!
+        this.sizing = { ...r, start: structuredClone(r.item), q0: { x: 0, y: 0 }, q: { x: 0, y: 0 }, ctrl: false, typed: {}, dragging: false, editing: true, timer: 0 }
+      }
+    }
     const s = this.sizing
     if (!s) return
-    if (e.key === 'Meta' || e.key === 'Control' || e.key === 'CapsLock') return
-    if (e.key === 'Shift' || e.key === 'Alt') {
+    if (e.key === 'Meta' || e.key === 'CapsLock') return
+    if (e.key === 'Shift' || e.key === 'Alt' || e.key === 'Control') {
       e.preventDefault() // Alt would open the browser menu on some systems
       if (!s.dragging) return
-      Object.assign(s, { shift: e.shiftKey, alt: e.altKey })
+      Object.assign(s, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey })
       return this.resize()
     }
     if (e.type === 'keyup') return
@@ -406,12 +442,12 @@ export class View2D {
   }
 
   /**
-   * Applies the size from the pointer and the typed values: snapped to the grid step, the opposite edge staying put
+   * Applies the size from the pointer and the typed values: snapped to the grid step (snap option or Ctrl), the opposite edge staying put
    * (Alt: the centre), proportional with Shift (set by the typed axis, else by the dragged one that changed most).
    */
   private resize() {
     const s = this.sizing!, st = s.start, it = s.item, b = itemBox(st)
-    const step = this.snap ? this.snapStep : 0.1, mm = this.ctl.unit().mm
+    const step = this.snap || s.ctrl ? this.snapStep : 0.1, mm = this.ctl.unit().mm
     const full = { x: b.l, y: b.w }, dir = { x: s.sx, y: s.sy }
     const typed = (axis: Axis) => {
       const v = parseFloat(s.typed[axis]?.replace(',', '.') ?? '')
@@ -454,7 +490,7 @@ export class View2D {
   private down(e: PointerEvent) {
     const target = e.target as Element
     if (this.drawing && e.button === 0) {
-      const p = this.snapped(this.point(e)), first = this.drawing[0]
+      const p = this.snapped(this.point(e), e.ctrlKey), first = this.drawing[0]
       const closing = this.drawing.length >= 3 && Math.hypot(p.x - first.x, p.y - first.y) < CLOSE * this.unitsPerPixel()
       if (closing) return this.finishDrawing()
       this.drawing.push(p)
@@ -471,7 +507,7 @@ export class View2D {
     } else if (role === 'resize' && this.selected) {
       const it = this.selected, sx = Number(target.getAttribute('data-sx')), sy = Number(target.getAttribute('data-sy'))
       const q = this.toLocal(it, this.point(e))
-      this.sizing = { item: it, start: structuredClone(it), sx, sy, q0: q, q, alt: e.altKey, shift: e.shiftKey, typed: {}, axis: sx ? 'x' : 'y', dragging: true, editing: false, timer: 0 }
+      this.sizing = { item: it, start: structuredClone(it), sx, sy, q0: q, q, alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey, typed: {}, axis: sx ? 'x' : 'y', dragging: true, editing: false, timer: 0 }
       this.drag = { mode: 'resize' }
       this.renderLabels()
     } else if (role === 'notch' && this.selected) {
@@ -508,7 +544,7 @@ export class View2D {
   private move(e: PointerEvent) {
     if (this.drawing?.length) {
       // preview of the next edge, without re-rendering the whole view
-      const p = this.snapped(this.point(e))
+      const p = this.snapped(this.point(e), e.ctrlKey)
       this.svg.querySelector('#draft')?.setAttribute('d', this.drawing.map((q, i) => `${i ? 'L' : 'M'}${q.x} ${q.y}`).join('') + `L${p.x} ${p.y}`)
       return
     }
@@ -520,18 +556,19 @@ export class View2D {
     }
     if (d.mode === 'resize') {
       this.sizing!.q = this.toLocal(this.sizing!.start, this.point(e))
-      Object.assign(this.sizing!, { shift: e.shiftKey, alt: e.altKey })
+      Object.assign(this.sizing!, { shift: e.shiftKey, alt: e.altKey, ctrl: e.ctrlKey })
       return this.resize()
     }
     const p = this.point(e), it = d.item
     if (d.mode === 'notch') {
       // pointer in the item's local frame, projected onto its outline
       const q = this.toLocal(it, p)
-      Object.assign(it.notches[d.index], { t: perimeterParam(it, q.x, q.y), manual: true })
+      const t = perimeterParam(it, q.x, q.y)
+      Object.assign(it.notches[d.index], { t: e.ctrlKey ? snapNotch(it, t) : t, manual: true })
       return this.ctl.change()
     }
     if (d.mode === 'vertex') {
-      it.pts[d.index] = this.toLocal(it, this.snapped(p))
+      it.pts[d.index] = this.toLocal(it, this.snapped(p, e.ctrlKey))
       return this.ctl.change()
     }
     const before = this.constrain ? this.ctl.violation(it) : 0
@@ -544,13 +581,13 @@ export class View2D {
       return false
     }
     if (d.mode === 'move') {
-      const step = this.snap ? this.snapStep : 0.1
+      const step = this.snap || e.ctrlKey ? this.snapStep : 0.1
       const x = round(p.x + d.dx, step), y = round(p.y + d.dy, step)
       // when blocked, slide along the obstacle on one axis
       attempt(() => Object.assign(it, { x, y })) || attempt(() => (it.x = x)) || attempt(() => (it.y = y))
     } else {
       const a = (Math.atan2(p.y - it.y, p.x - it.x) * 180) / Math.PI + 90
-      const snapped = this.snap || e.shiftKey ? round(a, 15) : round(a, 0.1)
+      const snapped = this.snap || e.ctrlKey ? round(a, 15) : round(a, 0.1)
       attempt(() => (it.rot = ((snapped + 540) % 360) - 180))
     }
     this.ctl.change()
