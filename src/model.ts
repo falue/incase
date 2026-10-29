@@ -61,6 +61,8 @@ export interface CaseDims {
   unknown: CaseKey[]
   /** Label ("Brand - model") of the preset last applied, shown while the values still match it. */
   preset?: string
+  /** Bottom L and W are edited independently; otherwise (also when missing) one keeps the other at the same taper. */
+  taperFree?: boolean
 }
 
 /** Case values a preset can fill in. */

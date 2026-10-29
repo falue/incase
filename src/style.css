@@ -209,6 +209,8 @@ summary small, .hint { font-weight: normal; color: var(--muted); }
 #case > * { grid-column: span 3; }
 #case > .prop:nth-child(-n + 3) { grid-column: span 2; }
 #case > .wide { grid-column: 1 / -1; }
+#case > .row { margin: 0; }
+.chain svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; }
 
 .row { display: flex; align-items: center; gap: 4px; margin: 3px 0; }
 .grow { flex: 1; min-width: 0; }

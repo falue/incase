@@ -57,6 +57,8 @@ const ICONS = {
   pack: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="5" rx="1"/><rect x="13" y="10" width="8" height="11" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
   redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
+  chain: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  chainBroken: '<path d="M15 9l3-3a3 3 0 0 0-4.2-4.2l-3 3M9 15l-3 3a3 3 0 0 0 4.2 4.2l3-3M4 8h3M8 4v3M20 16h-3M16 20v-3"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/>',
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
@@ -268,10 +270,21 @@ function renderCase() {
       b.bottomW = b.topW
       b.unknown = b.unknown.filter(k => k !== 'bottomL' && k !== 'bottomW')
     }, 'case')),
-    ...(tapered ? [
-      field('Bottom L', 'bottomL', 'Inner length at the floor; smaller than the top for tapered walls'),
-      field('Bottom W', 'bottomW', 'Inner width at the floor; smaller than the top for tapered walls'),
-    ] : []),
+    ...(tapered ? [h('div', { className: 'row wide' },
+      field('Bottom L', 'bottomL', 'Inner length at the floor; smaller than the top for tapered walls', v => {
+        if (!b.taperFree) b.bottomW = Math.max(0, b.topW - (b.topL - v))
+        b.bottomL = v
+      }),
+      h('button', {
+        className: 'icon chain', innerHTML: icon(b.taperFree ? 'chainBroken' : 'chain'),
+        tip: b.taperFree ? 'Bottom L and W are set separately · click to keep them at the same taper' : 'Changing one bottom size keeps the same taper on all sides · click to set them separately',
+        onclick: () => ((b.taperFree = !b.taperFree), changed('case')),
+      }),
+      field('Bottom W', 'bottomW', 'Inner width at the floor; smaller than the top for tapered walls', v => {
+        if (!b.taperFree) b.bottomL = Math.max(0, b.topL - (b.topW - v))
+        b.bottomW = v
+      }),
+    )] : []),
   )
 }
 
