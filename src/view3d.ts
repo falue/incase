@@ -115,6 +115,7 @@ function lidShell(box: CaseDims) {
 export class View3D {
   /** Extra vertical gap between layers, 0–1; at 1 it is half the longer case side; the bottom layer stays on the floor. */
   private explode = 0
+  private bounce = 0 // animation frame of the landing bounce
   private accent = '#3d8bff' // set by setTheme
   private renderer = new THREE.WebGLRenderer({ antialias: true })
   private scene = new THREE.Scene()
@@ -307,14 +308,32 @@ export class View3D {
 
   /** Sets the explode amount (see `explode`); only moves what is built, so dragging the slider stays fluid. */
   setExplode(v: number) {
+    const landed = v === 0 && this.explode > 0
     this.explode = v
-    this.applyExplode()
+    cancelAnimationFrame(this.bounce)
+    this.applyExplode(this.gap())
     this.draw()
+    if (landed) this.land()
   }
 
-  /** Lifts every built object by its steps of the gap, the lid split planes of objects along with them. */
-  private applyExplode() {
-    const gap = this.explode ** 2 * Math.max(this.extent.x, this.extent.y) // squared: fine control at small gaps
+  private gap() {
+    return this.explode ** 2 * Math.max(this.extent.x, this.extent.y) // squared: fine control at small gaps
+  }
+
+  /** The layers hop back up `hops` times, decaying, for `ms`; `height` is the first hop's gap per layer, as a fraction of the longer half case side. */
+  private land(ms = 500, hops = 2, height = 0.03) {
+    const start = performance.now(), size = height * Math.max(this.extent.x, this.extent.y)
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / ms)
+      this.applyExplode(size * Math.abs(Math.sin(hops * Math.PI * t)) * (1 - t) ** 2)
+      this.draw()
+      if (t < 1) this.bounce = requestAnimationFrame(step)
+    }
+    this.bounce = requestAnimationFrame(step)
+  }
+
+  /** Lifts every built object by its steps of `gap`, the lid split planes of objects along with them. */
+  private applyExplode(gap: number) {
     for (const o of this.content.children) {
       const { steps, lid, y0 } = o.userData as { steps?: number; lid?: [THREE.Plane, THREE.Plane]; y0: number }
       if (steps === undefined) continue
@@ -395,7 +414,7 @@ export class View3D {
     })
     const shell = [...caseShell(p.box), ...(p.box.lidDepth > 0 ? lidShell(p.box) : [])]
     this.content.add(...this.ghosts, ...shell)
-    this.applyExplode()
+    this.applyExplode(this.gap())
 
     if (!this.box) {
       this.box = p.box
