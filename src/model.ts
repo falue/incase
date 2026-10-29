@@ -87,7 +87,15 @@ export interface Project {
   placements?: SheetPlacement[]
 }
 
-const KEY = 'incase.project'
+const UNSAVED = 'incase.project' // the unnamed project (before named projects: everything)
+const NAMED = 'incase.project:' // + name
+const SHARED = 'incase.shared'
+const CURRENT = 'incase.current'
+/** Settings all projects share; the rest (case, objects, stack, sheet placements) belongs to each project. */
+const SHARED_KEYS: string[] = ['materials', 'kerf', 'showLabels', 'labelColor', 'showOutlines', 'outlineColor']
+const part = (p: Project, shared: boolean): Partial<Project> => Object.fromEntries(Object.entries(p).filter(([k]) => SHARED_KEYS.includes(k) === shared))
+export const sharedPart = (p: Project) => part(p, true)
+const storageKey = (name: string) => (name ? NAMED + name : UNSAVED)
 
 export const uid = () => crypto.randomUUID()
 
@@ -262,35 +270,97 @@ function defaultProject(): Project {
   }
 }
 
-export function parseProject(json: string): Project {
-  const p: Project = JSON.parse(json)
+/** Fills in what older saves lack and drops stack layers whose material no longer exists. */
+function normalize(p: Project) {
   for (const it of p.items) it.d2 ??= it.d // saves from before oval cylinders and spheres
   // saves from before labels and outlines could be switched off: both on, outlines in the label colour
   p.showLabels ??= true
   p.showOutlines ??= true
   p.outlineColor ??= p.labelColor
+  p.stack = p.stack.filter(id => p.materials.some(m => m.id === id))
   return p
 }
 
-/** Empty project for the guided setup: default case and materials, no objects. */
-export function newProject(): Project {
-  return { ...defaultProject(), items: [] }
+export const parseProject = (json: string): Project => normalize(JSON.parse(json))
+
+/** Empty project (default case, no objects) with the shared settings of `from`. */
+export function newProject(from: Project): Project {
+  const p = { ...defaultProject(), items: [], ...sharedPart(from) }
+  return { ...p, stack: suggestStack(p.materials, p.box.depth, []) }
 }
 
-export function loadProject(): Project {
-  const raw = localStorage.getItem(KEY)
-  if (raw) {
-    try {
-      return parseProject(raw)
-    } catch {
-      // corrupt storage: fall back to defaults
-    }
+/** Names of the saved projects, sorted. */
+export const projectNames = () =>
+  Object.keys(localStorage).filter(k => k.startsWith(NAMED)).map(k => k.slice(NAMED.length)).sort((a, b) => a.localeCompare(b))
+
+/** Name of the open project; '' = the unsaved one. */
+export const currentName = () => localStorage.getItem(CURRENT) ?? ''
+
+/** `name`, with " 2", " 3" … appended while a project of that name exists. */
+export function uniqueName(name: string) {
+  const names = projectNames()
+  let n = name
+  for (let i = 2; names.includes(n); i++) n = `${name} ${i}`
+  return n
+}
+
+const read = (key: string) => {
+  try {
+    return JSON.parse(localStorage.getItem(key) ?? 'null')
+  } catch {
+    return null // corrupt storage counts as missing
   }
-  return defaultProject()
+}
+
+/** Opens project `name` (missing parts from the defaults) with the shared settings and makes it the open one. */
+export function loadProject(name = currentName()): Project {
+  flushSave()
+  localStorage.setItem(CURRENT, name)
+  return normalize({ ...defaultProject(), ...read(storageKey(name)), ...read(SHARED) })
 }
 
 let saveTimer = 0
-export function saveProject(p: Project) {
+let pending: (() => void) | null = null
+
+/** Autosave of the open project and the shared settings, 300 ms after the last change. */
+export function saveProject(p: Project, name = currentName()) {
   clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => localStorage.setItem(KEY, JSON.stringify(p)), 300)
+  pending = () => {
+    localStorage.setItem(storageKey(name), JSON.stringify(part(p, false)))
+    localStorage.setItem(SHARED, JSON.stringify(sharedPart(p)))
+  }
+  saveTimer = setTimeout(flushSave, 300)
+}
+
+export function flushSave() {
+  clearTimeout(saveTimer)
+  pending?.()
+  pending = null
+}
+
+/** Stores `p` under the new name `name` and makes it the open project. */
+export function nameProject(p: Project, name: string) {
+  flushSave()
+  localStorage.setItem(CURRENT, name)
+  saveProject(p, name)
+  flushSave()
+}
+
+/** Empties the unsaved project (after it got a name). */
+export const resetUnsaved = (p: Project) => localStorage.setItem(UNSAVED, JSON.stringify(part(newProject(p), false)))
+
+export function copyProject(from: string, to: string) {
+  flushSave()
+  localStorage.setItem(storageKey(to), localStorage.getItem(storageKey(from))!)
+}
+
+export function renameProject(from: string, to: string) {
+  copyProject(from, to)
+  localStorage.removeItem(storageKey(from))
+  if (currentName() === from) localStorage.setItem(CURRENT, to)
+}
+
+export function deleteProject(name: string) {
+  flushSave()
+  localStorage.removeItem(storageKey(name))
 }

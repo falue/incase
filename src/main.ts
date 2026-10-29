@@ -5,7 +5,7 @@ import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, defaultItem, itemHeight, LAYER_COST, loadProject, newProject, parseProject, saveProject, setNotchCount, suggestStack, uid, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
+import { boxCorners, copyProject, currentName, defaultItem, deleteProject, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, renameProject, resetUnsaved, saveProject, setNotchCount, sharedPart, suggestStack, uid, uniqueName, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
 import { planSheets, type Piece, type Sheet } from './sheets'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
@@ -70,7 +70,7 @@ let project: Project = loadProject()
 let selectedId: string | null = null
 let layerIndex = 0 // layer shown in the top view, 0 = topmost
 let inches = pref('units') === 'in' // display only, the model is always mm
-const history = new History(JSON.stringify(project))
+let history = new History(JSON.stringify(project))
 
 const $ = (id: string) => document.getElementById(id)!
 /** Display format: at most 4 decimals. */
@@ -660,9 +660,7 @@ const SETUP_STEPS = ['Case', 'Materials & stack', 'Objects']
 
 /** Starts a new project and walks through case, materials and objects, then arranges evenly. */
 function guidedSetup() {
-  project = newProject()
-  selectedId = null
-  renderAll()
+  startNew()
   const step = (i: number) => {
     giveBack()
     const content =
@@ -955,21 +953,109 @@ document.documentElement.addEventListener('pointerleave', hideTooltip)
 
 // --- top bar ---
 
+// projects: the unsaved one and named ones, kept in this browser; autosave goes to the open one
+
+/** Opens project `name` ('' = the unsaved one) with a fresh undo history. */
+function openProject(name: string) {
+  project = loadProject(name)
+  history = new History(JSON.stringify(project))
+  selectedId = null
+  layerIndex = 0
+  renderAll()
+}
+
+/** Starts an empty unsaved project; undo brings the previous unsaved one back. */
+function startNew() {
+  if (currentName()) openProject('')
+  project = newProject(project)
+  selectedId = null
+  renderAll()
+}
+
+/** Inline name field: Enter calls `done` with a name no other project has, Esc or leaving it calls `cancel`. */
+function nameField(value: string, done: (name: string) => void, cancel: () => void) {
+  const el = h('input', { type: 'text', value, placeholder: 'Project name', className: 'name-field' })
+  el.onkeydown = e => {
+    const name = el.value.trim()
+    if (!(e.key === 'Enter' && name) && e.key !== 'Escape') return
+    e.preventDefault()
+    el.onblur = null // removing the field blurs it
+    if (e.key === 'Enter' && name !== value) done(uniqueName(name))
+    else cancel()
+  }
+  el.onblur = cancel
+  return el
+}
+
+const projects = $('projects') as HTMLDetailsElement
+
+function renderProjects() {
+  const current = currentName()
+  $('project-name').textContent = current || 'Unsaved'
+  $('save').hidden = !!current
+  const entry = (name: string) => {
+    const open = h('button', { className: 'grow', textContent: name || 'Unsaved', onclick: () => {
+      projects.open = false
+      if (name !== current) openProject(name)
+    } })
+    const rename = () => {
+      const field = nameField(name, to => (renameProject(name, to), renderProjects()), renderProjects)
+      open.replaceWith(field)
+      field.focus()
+    }
+    return h('div', { className: `row${name === current ? ' active' : ''}` }, open, ...(name ? [
+      iconButton('✎', 'Rename', rename),
+      iconButton('⧉', 'Copy (opens nothing, adds the copy to this list)', () => (copyProject(name, uniqueName(`${name} copy`)), renderProjects())),
+      iconButton('✕', 'Delete this project from the browser', () => {
+        if (!confirm(`Delete the project "${name}"? This cannot be undone.`)) return
+        if (name === current) openProject('')
+        deleteProject(name)
+        renderProjects()
+      }),
+    ] : []))
+  }
+  $('project-menu').replaceChildren(entry(''), ...projectNames().map(entry))
+}
+
+$('save').onclick = () => {
+  const save = $('save'), field = nameField('', name => {
+    nameProject(project, name)
+    resetUnsaved(project)
+    field.replaceWith(save)
+    renderProjects()
+  }, () => field.replaceWith(save))
+  save.replaceWith(field)
+  field.focus()
+}
+$('new').onclick = startNew
+
 const file = h('input', { type: 'file', accept: '.json,application/json', hidden: true })
 document.body.append(file)
+// a project file becomes a new named project; its materials join the shared ones (the same by id, else by name and thickness, are reused)
 file.onchange = async () => {
   const f = file.files?.[0]
   file.value = ''
   if (!f) return
+  let loaded: Project
   try {
-    project = parseProject(await f.text())
+    loaded = parseProject(await f.text())
   } catch {
     return alert('Not a valid project file.')
   }
-  selectedId = null
-  renderAll()
+  const ms = project.materials
+  const ids = new Map(loaded.materials.map(m => {
+    const same = ms.find(o => o.id === m.id) ?? ms.find(o => o.name === m.name && o.thickness === m.thickness)
+    if (!same) ms.push(m)
+    return [m.id, (same ?? m).id]
+  }))
+  nameProject({
+    ...loaded,
+    ...sharedPart(project),
+    stack: loaded.stack.map(id => ids.get(id)!),
+    placements: loaded.placements?.map(pl => ({ ...pl, material: ids.get(pl.material) ?? pl.material })),
+  }, uniqueName(f.name.replace(/\.json$/i, '') || 'Loaded'))
+  openProject(currentName())
 }
-$('save').onclick = () => download('incase.json', JSON.stringify(project, null, 2), 'application/json')
 $('load').onclick = () => file.click()
 $('setup').onclick = guidedSetup
 
@@ -1008,9 +1094,11 @@ $('plain-export-menu').replaceChildren(
   plainItem('SVG', 'All layers side by side as one SVG in mm', () => download('incase.svg', exportSvg(project, computeLayers(project), false), 'image/svg+xml')),
   plainItem('DXF', 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', () => download('incase.dxf', exportDxf(project, computeLayers(project), false), 'application/dxf')),
   plainItem('PDF', 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', pdfDialog),
+  plainItem('JSON', 'The whole project incl. materials as a file, to keep or share; Load opens it again', () =>
+    download(`${currentName() || 'incase'}.json`, JSON.stringify(project, null, 2), 'application/json')),
 )
 addEventListener('pointerdown', e => {
-  if (!plainExport.contains(e.target as Node)) plainExport.open = false
+  for (const menu of [plainExport, projects]) if (!menu.contains(e.target as Node)) menu.open = false
 })
 
 function applyTheme(theme: string) {
@@ -1224,6 +1312,7 @@ function renderLayerStrip(layers: Layer[]) {
 }
 
 function renderAll() {
+  renderProjects()
   renderGridField()
   renderCase()
   presetPicker()

@@ -7,12 +7,14 @@
   </head>
   <body>
     <header id="topbar">
-      <span class="brand"><span class="logo"></span>incase <button id="setup" class="primary" data-tip="Start a new project step by step: case, materials, objects (replaces the current one; ⌘Z brings it back)"><svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10M4 5l1.5-1v4M3.5 11h2.5l-2.5 3h2.5M3.5 16.5h2.5l-1.25 1.5 1.25 1.5h-2.5"/></svg>Guided setup</button></span>
+      <span class="brand"><span class="logo"></span>incase <button id="setup" class="primary" data-tip="Start a new unsaved project step by step: case, materials, objects"><svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10M4 5l1.5-1v4M3.5 11h2.5l-2.5 3h2.5M3.5 16.5h2.5l-1.25 1.5 1.25 1.5h-2.5"/></svg>Guided setup</button></span>
       <div class="bar">
         <div class="seg" id="layout"></div>
         <span class="spacer"></span>
-        <button id="save" data-tip="Download the project as a JSON file">Save</button>
-        <button id="load" data-tip="Open a project JSON file (replaces the current project; undo brings it back)">Load</button>
+        <details id="projects" class="dropdown down"><summary data-tip="The open project, autosaved in this browser · click to switch, rename, copy or delete"><span id="project-name"></span></summary><div class="menu" id="project-menu"></div></details>
+        <button id="save" data-tip="Name the unsaved project; from then on it autosaves under that name">Save as…</button>
+        <button id="new" data-tip="Start an empty unsaved project (case and objects; materials are shared by all projects)">New</button>
+        <button id="load" data-tip="Open a project JSON file as a new named project">Load</button>
         <div class="seg" id="units"></div>
         <button id="theme" class="icon" data-tip="Switch between dark and light mode">◐</button>
       </div>
