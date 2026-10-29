@@ -1,6 +1,6 @@
 import { areaD, areaPathsD, FillRule, getBoundsPathsD, intersectD, simplifyPathsD, type PathsD } from 'clipper2-ts'
 import { freePositions } from './arrange'
-import { AREA_TOL, numberOutline, offset, roundedRect, type Layer } from './geometry'
+import { AREA_TOL, numberStrokes, offset, roundedRect, type Layer } from './geometry'
 import type { Material, Project, SheetPlacement } from './model'
 
 export const FONT = 5 // mm, sheet titles and piece labels
@@ -232,7 +232,7 @@ export function sheetTitle(sheets: Sheet[], s: Sheet) {
 const labels = new WeakMap<Layer, PathsD>()
 
 /**
- * The layer's label (its number, as outlines) inside its foam (layer frame), at least `minWall` from every cut line,
+ * The layer's label (its number, as open strokes) inside its foam (layer frame), at least `minWall` from every cut line,
  * nearest its bottom-left corner; empty if it fits nowhere.
  */
 function layerLabel(l: Layer, minWall: number) {
@@ -243,7 +243,7 @@ function layerLabel(l: Layer, minWall: number) {
   const m = Math.max(minWall, LABEL_MARGIN)
   let label: PathsD = []
   for (const size of LABEL_SIZES) {
-    const digits = numberOutline(l.index + 1, size), g = getBoundsPathsD(digits)
+    const digits = numberStrokes(l.index + 1, size), g = getBoundsPathsD(digits)
     const w = g.right - g.left + 2 * m, h = g.bottom - g.top + 2 * m
     const box = roundedRect(w, h, 0)!.map(q => ({ x: q.x + (g.left + g.right) / 2, y: q.y + (g.top + g.bottom) / 2 }))
     const free = freePositions([box], bin, obstacles).flat()

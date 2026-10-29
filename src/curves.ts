@@ -84,6 +84,9 @@ export function contours(paths: PathsD, dx = 0, dy = 0): Contour[] {
   })
 }
 
+/** SVG path data for open polylines. */
+export const svgLines = (paths: PathsD) => paths.map(l => 'M' + l.map(pt).join('L')).join('')
+
 /** SVG path data for contours. */
 export const svgPath = (cs: Contour[]) =>
   cs.map(c => `M${pt(c.start)}` + c.segments.map(({ to, arc }) =>

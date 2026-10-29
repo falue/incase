@@ -45,13 +45,12 @@ const DIGITS = [
   [[0, 0, 0.6, 0, 0.6, -1, 0, -1, 0, 0], [0, -0.5, 0.6, -0.5]],
   [[0.6, -0.5, 0, -0.5, 0, -1, 0.6, -1, 0.6, 0, 0, 0]],
 ]
-const DIGIT = { advance: 0.9, stroke: 0.15 } // per size
+const ADVANCE = 0.9 // per size
 
-/** A whole number as closed outlines (strokes widened, for cutting or engraving), `size` tall, its baseline from (0, 0). */
-export function numberOutline(n: number, size: number): PathsD {
-  const strokes = [...String(n)].flatMap((ch, i) => DIGITS[Number(ch)].map(line =>
-    Array.from({ length: line.length / 2 }, (_, k) => ({ x: (line[2 * k] + i * DIGIT.advance) * size, y: line[2 * k + 1] * size }))))
-  return inflatePathsD(strokes, (DIGIT.stroke * size) / 2, JoinType.Round, EndType.Round)
+/** A whole number as open single-line strokes (for engraving), `size` tall, its baseline from (0, 0). */
+export function numberStrokes(n: number, size: number): PathsD {
+  return [...String(n)].flatMap((ch, i) => DIGITS[Number(ch)].map(line =>
+    Array.from({ length: line.length / 2 }, (_, k) => ({ x: (line[2 * k] + i * ADVANCE) * size, y: line[2 * k + 1] * size }))))
 }
 
 /** Local item frame → plan: rotate by item.rot (degrees, clockwise on screen since y points down), then move. */
