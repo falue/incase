@@ -9,6 +9,7 @@ const PAD = 10 // mm around the drawing
 const STEP = 0.5 // mm; hand placements snap to it
 const HANDLE = 24 // px from the piece edge to its rotation handle
 const HANDLE_R = 5 // px
+const ZOOM = { max: 50, speed: 0.0015 } // from the fitted view (1) in
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)
 const round = (v: number, step: number) => Math.round(v / step) * step
@@ -22,11 +23,13 @@ type Hit = { sheet: Sheet; piece: Piece }
 type Drag =
   | (Hit & { mode: 'move'; el: SVGGElement; x: number; y: number; moved: boolean })
   | (Hit & { mode: 'rotate'; rot: number })
+  | { mode: 'pan'; x: number; y: number; cx: number; cy: number; scale: number }
 
 /**
  * The stock sheets with their pieces, fitted into the view. Click a piece to select it; drag it to move it, also onto
  * another sheet of its material (an empty spare one is offered); drag its handle to turn it (Ctrl snaps to 15°);
  * double-click or `rotateHovered` turns it by 90°. Pieces of materials without a sheet size and oversize pieces stay put.
+ * Wheel zooms at the pointer, dragging the background (or with the middle button) pans, double-clicking it fits the view.
  */
 export class SheetView {
   private svg = document.createElementNS(NS, 'svg')
@@ -35,6 +38,8 @@ export class SheetView {
   private selected: number | null = null // layer index
   private hovered: number | null = null // layer index of the piece under the pointer
   private drag: Drag | null = null
+  private zoom = 1
+  private center: { x: number; y: number } | null = null // null: the drawing's centre
 
   constructor(host: HTMLElement, private ctl: SheetViewHost) {
     host.append(this.svg)
@@ -44,9 +49,15 @@ export class SheetView {
     this.svg.addEventListener('pointerup', e => this.up(e))
     this.svg.addEventListener('pointercancel', () => this.cancel())
     this.svg.addEventListener('pointerleave', () => (this.hovered = null))
+    this.svg.addEventListener('wheel', e => this.zoomAt(e), { passive: false })
     this.svg.addEventListener('dblclick', e => {
       const hit = this.hit(e)
       if (hit) this.turnBy90(hit)
+      else if (!(e.target as Element).closest('.piece, [data-role]')) {
+        this.zoom = 1
+        this.center = null
+        this.rerender()
+      }
     })
   }
 
@@ -56,7 +67,9 @@ export class SheetView {
     const head = Math.max(FONT + 3, 0.05 * Math.max(p.box.topL, p.box.topW, ...p.materials.flatMap(m => (m.sheets ?? []).flatMap(s => [s.w, s.h]))))
     const { sheets, width, height } = planSheets(p, layers, { spare: true, head })
     this.sheets = sheets
-    this.svg.setAttribute('viewBox', `${-PAD} ${-PAD} ${width + 2 * PAD} ${height + 2 * PAD}`)
+    const w = (width + 2 * PAD) / this.zoom, h = (height + 2 * PAD) / this.zoom
+    const c = this.center ?? { x: width / 2, y: height / 2 }
+    this.svg.setAttribute('viewBox', `${c.x - w / 2} ${c.y - h / 2} ${w} ${h}`)
     const label = visibleOn(this.svg, p.labelColor), outline = visibleOn(this.svg, p.outlineColor)
     const parts = sheets.flatMap((s, i) => {
       const fill = s.pieces.reduce((sum, pc) => sum + (pc.box.right - pc.box.left) * (pc.box.bottom - pc.box.top), 0) / (s.w * s.h)
@@ -125,7 +138,26 @@ export class SheetView {
     return this.svg.querySelector<SVGGElement>(`.piece[data-sheet="${sheet}"][data-piece="${this.sheets[sheet].pieces.indexOf(piece)}"]`)!
   }
 
+  private zoomAt(e: WheelEvent) {
+    e.preventDefault()
+    const p = this.point(e), b = this.svg.viewBox.baseVal
+    const c = { x: b.x + b.width / 2, y: b.y + b.height / 2 }
+    const zoom = Math.min(ZOOM.max, Math.max(1, this.zoom * Math.exp(-e.deltaY * ZOOM.speed)))
+    const k = this.zoom / zoom // keeps the point under the cursor in place
+    this.center = zoom === 1 ? null : { x: p.x + (c.x - p.x) * k, y: p.y + (c.y - p.y) * k }
+    this.zoom = zoom
+    this.rerender()
+  }
+
+  private pan(e: PointerEvent) {
+    e.preventDefault()
+    const b = this.svg.viewBox.baseVal
+    this.drag = { mode: 'pan', x: e.clientX, y: e.clientY, cx: b.x + b.width / 2, cy: b.y + b.height / 2, scale: 1 / this.svg.getScreenCTM()!.a }
+    this.svg.setPointerCapture(e.pointerId)
+  }
+
   private down(e: PointerEvent) {
+    if (e.button === 1) return this.pan(e)
     if (e.button !== 0) return
     const sel = this.find(this.selected)
     if (sel && (e.target as Element).getAttribute('data-role') === 'rotate') {
@@ -137,7 +169,10 @@ export class SheetView {
         this.selected = layer
         this.rerender()
       }
-      if (!hit) return
+      if (!hit) {
+        if (!(e.target as Element).closest('.piece')) this.pan(e)
+        return
+      }
       const p = this.point(e)
       this.drag = { ...this.find(layer)!, mode: 'move', el: this.pieceEl(this.find(layer)!), x: p.x, y: p.y, moved: false }
     }
@@ -149,6 +184,10 @@ export class SheetView {
     if (!d) {
       this.hovered = this.hit(e)?.piece.layer.index ?? null
       return
+    }
+    if (d.mode === 'pan') {
+      this.center = { x: d.cx - (e.clientX - d.x) * d.scale, y: d.cy - (e.clientY - d.y) * d.scale }
+      return this.rerender()
     }
     const p = this.point(e)
     if (d.mode === 'move') {
@@ -175,7 +214,7 @@ export class SheetView {
       if (d.rot === d.piece.rot || !this.place(d.sheet, d.piece, d.piece.x, d.piece.y, d.rot)) this.rerender()
       return
     }
-    if (!d?.moved) return
+    if (d?.mode !== 'move' || !d.moved) return
     const p = this.point(e)
     const to = this.sheets.find(s => s.material === d.sheet.material && s.index >= 0 && p.x >= s.x && p.x <= s.x + s.w && p.y >= s.y && p.y <= s.y + s.h)
     const { sheet, piece } = d
@@ -183,7 +222,7 @@ export class SheetView {
   }
 
   private cancel() {
-    if (this.drag) this.rerender()
+    if (this.drag && this.drag.mode !== 'pan') this.rerender()
     this.drag = null
   }
 
