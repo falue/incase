@@ -149,6 +149,10 @@ function prop(label: string, el: HTMLInputElement | HTMLSelectElement, tip: stri
 const button = (label: string, tip: string, action: () => void, ...rebuild: Section[]) =>
   h('button', { textContent: label, tip, onclick: () => (action(), changed(...rebuild)) })
 
+/** Labelled checkbox; `set` gets the new state, then the listed panels are rebuilt. */
+const checkbox = (label: string, tip: string, checked: boolean, set: (on: boolean) => void, ...rebuild: Section[]) =>
+  h('label', { className: 'check', tip }, h('input', { type: 'checkbox', checked, onchange: (e: Event) => (set((e.target as HTMLInputElement).checked), changed(...rebuild)) }), label)
+
 const iconButton = (label: string, tip: string, action: () => void, ...rebuild: Section[]) =>
   Object.assign(button(label, tip, action, ...rebuild), { className: 'icon' })
 
@@ -218,8 +222,11 @@ function changed(...rebuild: Section[]) {
   scheduleViews()
 }
 
+let taperedOn = false // keeps the bottom fields open while they still equal the top
+
 function renderCase() {
   const b = project.box
+  const tapered = taperedOn || b.bottomL !== b.topL || b.bottomW !== b.topW
   /** Case size field; a red dot marks values the chosen preset had no data for, until they are edited. */
   const field = (label: string, key: CaseKey, tip: string, set: (v: number) => void = v => (b[key] = v)) => {
     const unknown = b.unknown.includes(key)
@@ -239,17 +246,26 @@ function renderCase() {
     if (b[bottom] === b[top]) b[bottom] = v
     b[top] = v
   }
+  const wide = <T extends HTMLElement>(el: T) => (el.classList.add('wide'), el)
   $('case').replaceChildren(
-    field('Top L', 'topL', 'Inner length of the case at the top opening (the bottom follows while both are equal)', linked('topL', 'bottomL')),
-    field('Top W', 'topW', 'Inner width of the case at the top opening (the bottom follows while both are equal)', linked('topW', 'bottomW')),
-    field('Bottom L', 'bottomL', 'Inner length at the floor; smaller than the top for tapered walls'),
-    field('Bottom W', 'bottomW', 'Inner width at the floor; smaller than the top for tapered walls'),
-    field('Depth', 'depth', 'Inner depth of the case; the foam stack rests on its floor'),
-    field('Edge R', 'radius', 'Corner radius of the case seen from above'),
-    field('Bottom R', 'bottomRadius', 'Radius where the floor meets the walls; makes the lowest layers smaller'),
-    prop('Min. wall', size(() => b.minWall, v => (b.minWall = v)), 'Minimum material wall thickness: the least foam left between any two cutouts and between a cutout and the case wall'),
+    field('L', 'topL', 'Inner length of the case at the top opening (the bottom follows while both are equal)', linked('topL', 'bottomL')),
+    field('W', 'topW', 'Inner width of the case at the top opening (the bottom follows while both are equal)', linked('topW', 'bottomW')),
+    field('H', 'depth', 'Inner depth of the case; the foam stack rests on its floor'),
+    field('Corner rad.', 'radius', 'Corner radius of the case seen from above'),
+    field('Bottom rad.', 'bottomRadius', 'Radius where the floor meets the walls; makes the lowest layers smaller'),
     field('Lid depth', 'lidDepth', 'Inner depth of the lid; case depth + lid depth is the tallest anything may reach'),
     ...(isBorrowed('preset-picker') ? [] : [$('preset-picker')]),
+    wide(checkbox('Tapered walls', 'Walls lean inwards: the floor is smaller than the top opening', tapered, on => {
+      taperedOn = on
+      if (on) return
+      b.bottomL = b.topL
+      b.bottomW = b.topW
+      b.unknown = b.unknown.filter(k => k !== 'bottomL' && k !== 'bottomW')
+    }, 'case')),
+    ...(tapered ? [
+      field('Bottom L', 'bottomL', 'Inner length at the floor; smaller than the top for tapered walls'),
+      field('Bottom W', 'bottomW', 'Inner width at the floor; smaller than the top for tapered walls'),
+    ] : []),
   )
 }
 
@@ -376,6 +392,7 @@ function renderMaterials() {
         ms.push({ id: uid(), name: `Foam ${ms.length + 1}`, thickness: 5, color: nextColor(), sheets })
       }, 'materials'),
     ),
+    h('div', { className: 'row' }, prop('Min. wall', size(() => project.box.minWall, v => (project.box.minWall = v)), 'Minimum material wall thickness: the least foam left between any two cutouts and between a cutout and the case wall')),
   )
   renderExport() // lists the materials
 }
@@ -505,11 +522,7 @@ function renderStack(starMm = 5) {
       textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
       tip: 'A stack lower than the case is fine (it rests on the floor); a taller one does not fit',
     }),
-    h('span', { className: 'grow' }),
-    Object.assign(
-      button('Auto stack', 'When on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', () => (project.stackAuto = !project.stackAuto)),
-      { className: 'toggle' + (project.stackAuto ? ' active' : '') },
-    ),
+    checkbox('Auto stack', 'When on, the stack builds itself from the material list and the objects and stays updated; editing a layer turns it off', project.stackAuto, on => (project.stackAuto = on)),
   )
   // how far each object's cut misses a layer boundary, and the stack the case depth
   const off = project.items.map(it => ({ name: it.name, d: Math.abs(resting(project, it).z - it.z) })).filter(o => o.d > 0.01)

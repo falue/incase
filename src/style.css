@@ -86,7 +86,7 @@ input[type='color']::-webkit-color-swatch { border: 1px solid var(--line); borde
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--panel-2); }
 .seg button { padding: 3px 10px; border-radius: 0; background: none; color: var(--muted); }
 .seg button + button { border-left: 1px solid var(--line); }
-.seg button.active, .toggle.active { background: var(--accent); color: var(--accent-text); }
+.seg button.active { background: var(--accent); color: var(--accent-text); }
 
 /* top bar */
 /* shares the page columns so the layout switch sits above the viewports */
@@ -196,6 +196,11 @@ summary small, .hint { font-weight: normal; color: var(--muted); }
 .prop > input:focus, .prop > select:focus { border: none; }
 .prop > input[type='text'] { text-align: left; }
 .prop.wide { grid-column: 1 / -1; }
+/* Case: L W H in thirds, the rest in halves */
+#case { grid-template-columns: repeat(6, 1fr); }
+#case > * { grid-column: span 3; }
+#case > .prop:nth-child(-n + 3) { grid-column: span 2; }
+#case > .wide { grid-column: 1 / -1; }
 
 .row { display: flex; align-items: center; gap: 4px; margin: 3px 0; }
 .grow { flex: 1; min-width: 0; }
