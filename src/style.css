@@ -127,6 +127,7 @@ body.export-mode #layout button.active { background: none; color: var(--muted); 
 #export-section > div { padding: 0 10px 10px; }
 #export .primary { flex: 1; }
 /* sheet sizes: indented below their material */
+#export details { margin: 0 -10px; } /* full width, as the design space sections */
 #export .row.size { padding-left: 14px; }
 #export .row.size > .prop.short { flex: 1 1 0; }
 #export .row > .prop.count { flex: 0 0 58px; }

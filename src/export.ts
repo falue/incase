@@ -63,14 +63,15 @@ export function layout(p: Project, layers: Layer[]) {
  * Everything to draw, in mm (y down). On sheets: the stock sheets (frames and titles) and on them every layer's cut
  * lines (kerf applied), object outlines, footprints, object names and label; sheet frames in the outline colour.
  * Otherwise all layers side by side (see layout), each label below its layer.
- * Labels, titles and object names, the footprints and the object outlines are left out when switched off.
+ * Labels and titles, object names, footprints, object outlines and sheet frames are left out when switched off.
  */
 function drawing(p: Project, layers: Layer[], onSheets: boolean) {
   const all = drawn(p, layers, onSheets)
   return {
     ...all,
+    frames: p.showFrames ? all.frames : [],
     titles: p.showLabels ? all.titles : [],
-    pieces: all.pieces.map(pc => ({ ...pc, outlines: p.showOutlines ? pc.outlines : [], footprints: p.showFootprints ? pc.footprints : [], label: p.showLabels ? pc.label : [], names: p.showLabels ? pc.names : [] })),
+    pieces: all.pieces.map(pc => ({ ...pc, outlines: p.showOutlines ? pc.outlines : [], footprints: p.showFootprints ? pc.footprints : [], label: p.showLabels ? pc.label : [], names: p.showNames ? pc.names : [] })),
   }
 }
 

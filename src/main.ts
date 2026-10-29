@@ -487,23 +487,38 @@ function sheetSizes(m: Material) {
 
 /** Export settings and buttons. */
 function renderExport() {
+  // foldable sections keep their open state across rebuilds
+  const fold = (title: string, tip: string, open: boolean, ...children: Node[]) => {
+    const was = [...$('export').querySelectorAll('details')].find(d => d.firstElementChild!.textContent === title)
+    return h('details', { open: was?.open ?? open }, h('summary', { textContent: title, tip }), h('div', {}, ...children))
+  }
   $('export').replaceChildren(
-    // each colour leads the row of what is drawn in it
-    h('div', { className: 'row' },
-      withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Engraving colour: the labels (except the topmost layer number), the object names on the top layer and the footprints; must differ from all material colours'),
-      checkbox('Labels engraving', 'Layer labels and object names on the sheets and in the exports. Each object\'s name is centred in it as text, on the top layer (move it to where it should be engraved) and on the layer it rests on', project.showLabels, on => (project.showLabels = on)),
-      checkbox('Footprints engraving', 'On the layer an object rests on: where the layer above is cut for it (fit and notches included)', project.showFootprints, on => (project.showFootprints = on)),
+    fold('Cutting', 'How the pieces are cut and spaced on the sheets', true,
+      h('div', { className: 'props' },
+        prop('Kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the cut (laser beam, mill or knife); exported pieces grow by half of it so they come out at nominal size'),
+        prop('Spacing', size(() => project.spacing ?? project.box.minWall, v => (project.spacing = v)), 'Gap between the pieces on a sheet and to its edge; follows the min. wall until changed here (the min. wall stays as it is)'),
+      ),
     ),
-    h('div', { className: 'row' },
-      withTip(color(() => project.outlineColor, v => (project.outlineColor = v)), 'Reference colour: object and sheet outlines, the topmost layer number and the object names where they rest (also in the top view); must differ from all material colours'),
-      checkbox('Reference lines', 'Object outlines on the sheets and in the exports, for orientation only', project.showOutlines, on => (project.showOutlines = on)),
+    fold('Include info', 'Engravings and reference lines added to the sheets and the exports', true,
+      h('h4', { textContent: 'Engravings' }),
+      h('div', { className: 'props' },
+        checkbox('Layer numbers', 'Layer numbers on the sheets and in the exports, with the sheet titles; the topmost one in the reference colour', project.showLabels, on => (project.showLabels = on)),
+        checkbox('Object names', 'Each object\'s name centred in it as text: on the top layer (move it to where it should be engraved) and, in the reference colour, on the layer it rests on', project.showNames, on => (project.showNames = on)),
+        checkbox('Footprints', 'On the layer an object rests on: where the layer above is cut for it (fit and notches included)', project.showFootprints, on => (project.showFootprints = on)),
+      ),
+      h('div', { className: 'row' },
+        prop('Engraving line colour', color(() => project.labelColor, v => (project.labelColor = v)), 'Layer numbers (except the topmost), object names on the top layer, footprints and sheet titles; must differ from all material colours'),
+      ),
+      h('h4', { textContent: 'References' }),
+      h('div', { className: 'props' },
+        checkbox('Sheet outline', 'Sheet frames in the exports', project.showFrames, on => (project.showFrames = on)),
+        checkbox('Objects', 'Object outlines on every layer cut for them and where they rest, for orientation only', project.showOutlines, on => (project.showOutlines = on)),
+      ),
+      h('div', { className: 'row' },
+        prop('Reference line colour', color(() => project.outlineColor, v => (project.outlineColor = v)), 'Object and sheet outlines, the topmost layer number and the object names where they rest (also in the top view); must differ from all material colours'),
+      ),
     ),
-    h('div', { className: 'props' },
-      prop('Kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the cut (laser beam, mill or knife); exported pieces grow by half of it so they come out at nominal size'),
-      prop('Spacing', size(() => project.spacing ?? project.box.minWall, v => (project.spacing = v)), 'Gap between the pieces on a sheet and to its edge; follows the min. wall until changed here (the min. wall stays as it is)'),
-    ),
-    h('h4', { textContent: 'Sheet sizes', tip: 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the spacing apart. Empty = no limit' }),
-    ...project.materials.flatMap(sheetSizes),
+    fold('Sheet sizes', 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the spacing apart. Empty = no limit', false, ...project.materials.flatMap(sheetSizes)),
     h('h4', { textContent: 'Export sheets' }),
     h('div', { className: 'row' },
       h('button', { className: 'primary', textContent: 'SVG', tip: 'All layers on the stock sheets of their material, as one SVG in mm', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project), true), 'image/svg+xml') }),

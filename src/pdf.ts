@@ -48,10 +48,9 @@ function drawPiece(doc: jsPDF, p: Project, pc: Piece, dx: number, dy: number, fo
   draw(doc, pc.cut, dx, dy)
   doc.setDrawColor(p.labelColor)
   if (p.showFootprints && pc.footprints.length) draw(doc, pc.footprints, dx, dy)
-  if (!p.showLabels) return
-  doc.setTextColor(pc.labelColor).setFontSize(font * PT_PER_MM)
-  doc.text(pc.label.replace(/·/g, '-'), pc.labelAt.x + dx, pc.labelAt.y + dy)
-  for (const t of pc.names) doc.setTextColor(t.color).text(t.text, t.x + dx, t.y + dy, { align: 'center', baseline: 'middle' })
+  doc.setFontSize(font * PT_PER_MM)
+  if (p.showLabels) doc.setTextColor(pc.labelColor).text(pc.label.replace(/·/g, '-'), pc.labelAt.x + dx, pc.labelAt.y + dy)
+  if (p.showNames) for (const t of pc.names) doc.setTextColor(t.color).text(t.text, t.x + dx, t.y + dy, { align: 'center', baseline: 'middle' })
 }
 
 const cross = (doc: jsPDF, x: number, y: number) => {

@@ -88,7 +88,7 @@ export class SheetView {
             + (p.showOutlines ? `<path class="outline" stroke="${outline}" d="${pathData(outlines)}"/>` : '')
             + (p.showFootprints ? `<path class="label" stroke="${label}" d="${pathData(footprints)}"/>` : '')
             + (p.showLabels ? `<path class="label" stroke="${pc.layer.index ? label : outline}" d="${svgLines(l)}"/>` : '')
-            + (p.showLabels ? names.map(t => `<text class="name" fill="${pc.layer.index ? outline : label}" font-size="${FONT}" x="${t.x}" y="${t.y}" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('') : '')
+            + (p.showNames ? names.map(t => `<text class="name" fill="${pc.layer.index ? outline : label}" font-size="${FONT}" x="${t.x}" y="${t.y}" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('') : '')
             + '</g>'
         }),
       ]
