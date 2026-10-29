@@ -20,6 +20,57 @@ const SHELL = '#7f8fa3' // case and lid
 const OBJECT = '#ff9a3c'
 const LID_HIT = '#ff2a2a' // part of an object above the closed lid
 
+const HATCH = { mm: 4, px: 16, shade: 0.6 } // section faces: stripe spacing, texture tile size, colour factor
+let hatchTexture: THREE.CanvasTexture | null = null
+
+/** Faint (20 % black) diagonal stripes on white, one per tile; tiles seamlessly. */
+function hatch() {
+  if (hatchTexture) return hatchTexture
+  const c = Object.assign(document.createElement('canvas'), { width: HATCH.px, height: HATCH.px }), g = c.getContext('2d')!, n = HATCH.px
+  g.fillStyle = '#fff'
+  g.fillRect(0, 0, n, n)
+  g.strokeStyle = 'rgba(0, 0, 0, 0.2)'
+  g.lineWidth = n / 6
+  g.beginPath()
+  for (const o of [-n, 0, n]) {
+    g.moveTo(o, n)
+    g.lineTo(o + n, 0)
+  }
+  g.stroke()
+  hatchTexture = new THREE.CanvasTexture(c)
+  hatchTexture.wrapS = hatchTexture.wrapT = THREE.RepeatWrapping
+  hatchTexture.colorSpace = THREE.SRGBColorSpace
+  return hatchTexture
+}
+
+/**
+ * The faces of `geo` lying in a section plane (three x in `xs`, three z in `zs`), darker and hatched in world mm;
+ * null if there are none.
+ */
+function sectionFaces(geo: THREE.BufferGeometry, xs: number[], zs: number[], color: THREE.Color, eps = 0.01) {
+  const pos = geo.toNonIndexed().attributes.position
+  const points: number[] = [], uvs: number[] = []
+  for (let t = 0; t < pos.count; t += 3) {
+    const v = [0, 1, 2].map(k => new THREE.Vector3().fromBufferAttribute(pos, t + k))
+    const on = (axis: 'x' | 'z', values: number[]) => values.some(c => v.every(p => Math.abs(p[axis] - c) < eps))
+    const alongZ = on('x', xs) // a face across x runs along z
+    if (!alongZ && !on('z', zs)) continue
+    for (const p of v) {
+      points.push(p.x, p.y, p.z)
+      uvs.push((alongZ ? p.z : p.x) / HATCH.mm, p.y / HATCH.mm)
+    }
+  }
+  if (!points.length) return null
+  const faces = new THREE.BufferGeometry()
+  faces.setAttribute('position', new THREE.Float32BufferAttribute(points, 3))
+  faces.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2))
+  faces.computeVertexNormals()
+  return new THREE.Mesh(faces, new THREE.MeshStandardMaterial({
+    color: color.clone().multiplyScalar(HATCH.shade), map: hatch(), roughness: 0.9, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -2, // in front of the slab's own face
+  }))
+}
+
 function collectShapes(node: PolyPathD, out: THREE.Shape[]) {
   for (let i = 0; i < node.count; i++) {
     const outer = node.child(i)
@@ -388,6 +439,8 @@ export class View3D {
       const slab = lifted(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9 })), steps(layer.index))
       slab.userData.layer = layer.index
       this.slabs.push(slab)
+      const section = sectioned && sectionFaces(geo, [x0, x1].filter(Number.isFinite), [y0, y1].filter(Number.isFinite), color)
+      if (section) this.content.add(lifted(section, steps(layer.index)))
       this.content.add(
         slab,
         lifted(layer.index === current
