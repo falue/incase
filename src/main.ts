@@ -69,6 +69,7 @@ const ICONS = {
   first: '<rect x="3" y="3" width="10" height="10" rx="1"/><rect x="11" y="11" width="10" height="10" rx="1" stroke-dasharray="2 2"/><path d="M8 8l8 8"/>',
   chain: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   chainBroken: '<path d="M15 9l3-3a3 3 0 0 0-4.2-4.2l-3 3M9 15l-3 3a3 3 0 0 0 4.2 4.2l3-3M4 8h3M8 4v3M20 16h-3M16 20v-3"/>',
+  save: '<path d="M5 3h11l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/>',
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
@@ -390,13 +391,14 @@ function presetPicker() {
     else return
     e.preventDefault()
   }
-  const save = button('＋', 'Save the current case as your own preset (in this browser)', () => {
+  const save = button('', 'Save the current case as your own preset (in this browser)', () => {
     const name = prompt('Name of the preset', search.value || 'My case')?.trim()
     if (!name) return
     const values = Object.fromEntries(CASE_KEYS.map(k => [k, project.box[k]])) as Record<CaseKey, number>
     saveUserPresets([...userPresets().filter(u => u.name !== name), { name, group: 'yours', values, unknown: [...project.box.unknown], user: true }])
   })
   save.className = 'icon'
+  save.innerHTML = icon('save')
   save.onmousedown = e => e.preventDefault() // keep the field focused so the popup stays open
   $('presets').replaceChildren(h('div', { className: 'row' }, search, save), list)
   const toggle = $('presets-button')
