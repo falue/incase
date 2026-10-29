@@ -10,9 +10,12 @@ const STROKE = 0.3528 // mm = 1 pt
 const TITLE_RAISE = 3 // mm from a sheet title's baseline to its sheet
 
 /** An object name, centred on (x, y), turned by `rot` degrees clockwise. */
-type Name = { x: number; y: number; rot: number; text: string }
+type Name = { x: number; y: number; rot: number; text: string; color: string }
 
-/** What gets drawn for one layer, in sheet mm (y down): cut lines, object outlines, object names and a label below. */
+/** Names are engraved on the top layer; where objects rest they are for reference only. */
+const nameColor = (p: Project, l: Layer) => (l.index ? p.outlineColor : p.labelColor)
+
+/** What gets drawn for one layer, in sheet mm (y down): cut lines, object outlines, footprints, object names and a label below. */
 export interface Piece {
   /** Bounding box of the piece including its label. */
   x: number
@@ -21,6 +24,7 @@ export interface Piece {
   h: number
   cut: Contour[]
   outlines: Contour[]
+  footprints: Contour[]
   color: string
   label: string
   /** The top layer's label is in the outline colour, as its face stays visible. */
@@ -44,11 +48,12 @@ export function layout(p: Project, layers: Layer[]) {
       x, y: MARGIN, w: L, h: W + 4 + FONT,
       cut: contours(p.kerf > 0 ? offset(layer.paths, p.kerf / 2) : layer.paths, cx, cy),
       outlines: contours(layer.outlines, cx, cy),
+      footprints: contours(layer.footprints, cx, cy),
       color,
       labelColor: layer.index ? p.labelColor : p.outlineColor,
       label: `${i + 1} · ${name} · ${thickness} mm`,
       labelAt: { x, y: MARGIN + W + 4 + FONT },
-      names: layer.names.map(n => ({ x: n.x + cx, y: n.y + cy, rot: 0, text: n.text })),
+      names: layer.names.map(n => ({ x: n.x + cx, y: n.y + cy, rot: 0, text: n.text, color: nameColor(p, layer) })),
     }
   })
   return { width: layers.length * (L + GAP) - GAP + 2 * MARGIN, height: W + FONT + 4 + 2 * MARGIN, pieces, font: FONT, stroke: STROKE }
@@ -56,16 +61,16 @@ export function layout(p: Project, layers: Layer[]) {
 
 /**
  * Everything to draw, in mm (y down). On sheets: the stock sheets (frames and titles) and on them every layer's cut
- * lines (kerf applied), object outlines, object names and label; sheet frames in the outline colour.
+ * lines (kerf applied), object outlines, footprints, object names and label; sheet frames in the outline colour.
  * Otherwise all layers side by side (see layout), each label below its layer.
- * Labels, titles and object names, and the object outlines, are left out when switched off.
+ * Labels, titles and object names, the footprints and the object outlines are left out when switched off.
  */
 function drawing(p: Project, layers: Layer[], onSheets: boolean) {
   const all = drawn(p, layers, onSheets)
   return {
     ...all,
     titles: p.showLabels ? all.titles : [],
-    pieces: all.pieces.map(pc => ({ ...pc, outlines: p.showOutlines ? pc.outlines : [], label: p.showLabels ? pc.label : [], names: p.showLabels ? pc.names : [] })),
+    pieces: all.pieces.map(pc => ({ ...pc, outlines: p.showOutlines ? pc.outlines : [], footprints: p.showFootprints ? pc.footprints : [], label: p.showLabels ? pc.label : [], names: p.showLabels ? pc.names : [] })),
   }
 }
 
@@ -77,7 +82,7 @@ function drawn(p: Project, layers: Layer[], onSheets: boolean) {
       height,
       frames: [] as Contour[],
       titles: pieces.map(pc => ({ ...pc.labelAt, text: pc.label, color: pc.labelColor })),
-      pieces: pieces.map((pc, i) => ({ layer: layers[i], cut: pc.cut, outlines: pc.outlines, label: [] as Contour[], names: pc.names })),
+      pieces: pieces.map((pc, i) => ({ layer: layers[i], cut: pc.cut, outlines: pc.outlines, footprints: pc.footprints, label: [] as Contour[], names: pc.names })),
     }
   }
   const { sheets, width, height } = planSheets(p, layers)
@@ -89,8 +94,8 @@ function drawn(p: Project, layers: Layer[], onSheets: boolean) {
     frames: sheets.map(frame),
     titles: sheets.map(s => ({ x: s.x, y: s.y - TITLE_RAISE, text: sheetTitle(sheets, s), color: p.labelColor })),
     pieces: sheets.flatMap(s => s.pieces.map(pc => {
-      const { cut, outlines, label, names } = pieceShapes(p, s, pc)
-      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), label: contours(label), names }
+      const { cut, outlines, footprints, label, names } = pieceShapes(p, s, pc)
+      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), footprints: contours(footprints), label: contours(label), names: names.map(n => ({ ...n, color: nameColor(p, pc.layer) })) }
     })),
   }
 }
@@ -99,7 +104,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)
 
 /**
  * One SVG in mm (see drawing), cut lines in the material colours; piece labels are outlines, turned with their piece.
- * The top layer's label is in the outline colour, as its face stays visible; object names are centred text.
+ * The top layer's label is in the outline colour, as its face stays visible; object names are centred text (see nameColor).
  */
 export function exportSvg(p: Project, layers: Layer[], onSheets: boolean): string {
   const { width, height, frames, titles, pieces } = drawing(p, layers, onSheets)
@@ -116,7 +121,8 @@ ${pieces.map(pc => `<path stroke="${pc.layer.material.color}" d="${svgPath(pc.cu
 </g>
 <g id="labels" fill="${p.labelColor}" font-family="sans-serif" font-size="${FONT}">
 ${titles.map(t => `<text x="${t.x}" y="${t.y}"${t.color === p.labelColor ? '' : ` fill="${t.color}"`}>${esc(t.text)}</text>`).join('\n')}
-${pieces.flatMap(pc => pc.names).map(t => `<text x="${t.x}" y="${t.y + 0.35 * FONT}" text-anchor="middle" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('\n')}
+${pieces.flatMap(pc => pc.names).map(t => `<text x="${t.x}" y="${t.y + 0.35 * FONT}"${t.color === p.labelColor ? '' : ` fill="${t.color}"`} text-anchor="middle" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('\n')}
+${pieces.filter(pc => pc.footprints.length).map(pc => `<path fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}" d="${svgPath(pc.footprints)}"/>`).join('\n')}
 ${pieces.filter(pc => pc.label.length).map(pc => `<path fill="none" stroke="${pc.layer.index ? p.labelColor : p.outlineColor}" stroke-width="${STROKE}" d="${svgPath(pc.label)}"/>`).join('\n')}
 </g>
 </svg>
@@ -176,9 +182,11 @@ export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): strin
     for (const t of pc.names) {
       // centred (72 = 1) on the middle (73 = 2) of the alignment point (11, 21)
       const x = n(t.x), y = n(height - t.y)
-      out.push(0, 'TEXT', 8, 'LABELS', 62, label, 10, x, 20, y, 40, FONT, 1, t.text.replace(/·/g, '-'), 50, n(-t.rot), 72, 1, 11, x, 21, y, 73, 2)
+      const ref = t.color !== p.labelColor
+      out.push(0, 'TEXT', 8, ref ? 'OUTLINES' : 'LABELS', 62, aci(t.color), 10, x, 20, y, 40, FONT, 1, t.text.replace(/·/g, '-'), 50, n(-t.rot), 72, 1, 11, x, 21, y, 73, 2)
     }
     polylines(pc.cut, `CUT_${pc.layer.index + 1}_${pc.layer.material.name.replace(/[^\w-]+/g, '_')}`, aci(pc.layer.material.color))
+    polylines(pc.footprints, 'LABELS', label)
     if (pc.layer.index) polylines(pc.label, 'LABELS', label)
     else polylines(pc.label, 'OUTLINES', aci(p.outlineColor))
   }

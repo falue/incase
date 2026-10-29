@@ -154,10 +154,12 @@ export interface Layer {
   b: number
   tree: PolyTreeD
   paths: PathsD
-  /** Outlines of the objects themselves (no fit, no notches). */
+  /** Outlines of the objects themselves (no fit, no notches), on every layer cut for them and where they rest. */
   outlines: PathsD
-  /** Object names at the centres of their outlines; top layer only. */
+  /** Object names at the centres of their outlines; on the top layer and where the objects rest. */
   names: { x: number; y: number; text: string }[]
+  /** Where the layer above is cut for the objects resting on this one. */
+  footprints: PathsD
 }
 
 /** The object's own outline in a slab (or its footprint for a = -Infinity), without fit and notches. */
@@ -237,19 +239,24 @@ function joinCuts(perItem: PathsD[]): PathsD {
 }
 
 export function computeLayers(p: Project): Layer[] {
-  return slabs(p).map(({ material, a, b, outline }, index) => {
+  const all = slabs(p), rest = p.items.map(it => resting(p, it))
+  return all.map(({ material, a, b, outline }, index) => {
     const tree = new PolyTreeD()
     if (outline) {
-      const cuts = joinCuts(p.items.map(it => itemCuts(it, a, resting(p, it).z)))
+      const cuts = joinCuts(p.items.map((it, i) => itemCuts(it, a, rest[i].z)))
       booleanOpDWithPolyTree(ClipType.Difference, [outline], cuts, tree, FillRule.NonZero, 3)
     }
-    const own = p.items.map(it => ({ it, outline: objectOutline(it, a, resting(p, it).z) }))
-    const outlines = unionD(own.flatMap(o => o.outline), FillRule.NonZero)
-    const names = index ? [] : own.filter(o => o.it.name && o.outline.length).map(({ it, outline }) => {
-      const b = getBoundsPathsD(outline)
-      return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2, text: it.name }
+    const footprints = unionD(p.items.flatMap((it, i) => (rest[i].layer === index ? itemCuts(it, all[index - 1].a, rest[i].z) : [])), FillRule.NonZero)
+    // where an object rests, its outline in the slab above
+    const own = p.items.map((it, i) => objectOutline(it, rest[i].layer === index ? all[index - 1].a : a, rest[i].z))
+    const outlines = unionD(own.flat(), FillRule.NonZero)
+    // on the top layer and on the layer an object rests on, centred in its outline
+    const names = p.items.flatMap((it, i) => {
+      if (!it.name || !own[i].length || (index && rest[i].layer !== index)) return []
+      const g = getBoundsPathsD(own[i])
+      return [{ x: (g.left + g.right) / 2, y: (g.top + g.bottom) / 2, text: it.name }]
     })
-    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines, names }
+    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines, names, footprints }
   })
 }
 

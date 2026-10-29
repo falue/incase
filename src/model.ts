@@ -80,6 +80,8 @@ export interface Project {
   /** Layer labels (and sheet titles) in the sheet view and the exports. */
   showLabels: boolean
   labelColor: string
+  /** Where the layer above is cut, engraved on the layer an object rests on. */
+  showFootprints: boolean
   /** Outlines of the objects themselves in the sheet view and the exports. */
   showOutlines: boolean
   outlineColor: string
@@ -94,7 +96,7 @@ const NAMED = 'incase.project:' // + name
 const SHARED = 'incase.shared'
 const CURRENT = 'incase.current'
 /** Settings all projects share; the rest (case, objects, stack, sheet placements) belongs to each project. */
-const SHARED_KEYS: string[] = ['materials', 'kerf', 'showLabels', 'labelColor', 'showOutlines', 'outlineColor']
+const SHARED_KEYS: string[] = ['materials', 'kerf', 'showLabels', 'labelColor', 'showFootprints', 'showOutlines', 'outlineColor']
 const part = (p: Project, shared: boolean): Partial<Project> => Object.fromEntries(Object.entries(p).filter(([k]) => SHARED_KEYS.includes(k) === shared))
 export const sharedPart = (p: Project) => part(p, true)
 const storageKey = (name: string) => (name ? NAMED + name : UNSAVED)
@@ -266,6 +268,7 @@ function defaultProject(): Project {
     items: [camera],
     showLabels: true,
     labelColor: '#ff00ff',
+    showFootprints: true,
     showOutlines: true,
     outlineColor: '#ffff00',
     kerf: 0,

@@ -64,7 +64,7 @@ export class SheetView {
         `<rect style="--frame:${outline}" class="sheet${s.spare ? ' spare' : ''}${s.unlimited ? ' unlimited' : ''}${s.oversize ? ' oversize' : ''}${s.missing ? ' missing' : ''}" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}"/>`,
         `<text class="title" x="${s.x}" y="${s.y - head * 0.3}" font-size="${head * 0.6}">${esc(title)}</text>`,
         ...s.pieces.map((pc, j) => {
-          const { cut, outlines, label: l, names } = pieceShapes(p, s, pc)
+          const { cut, outlines, footprints, label: l, names } = pieceShapes(p, s, pc)
           const color = visibleOn(this.svg, pc.layer.material.color)
           const fixed = s.index < 0
           const tip = fixed ? 'Placed automatically' : 'Click to select · drag to move, also onto another sheet · drag the handle to turn (Ctrl 15°) · double-click or R turns by 90°'
@@ -72,8 +72,9 @@ export class SheetView {
           return `<g class="${cls}" data-sheet="${i}" data-piece="${j}" data-tip="${esc(`Layer ${pc.layer.index + 1} · ${tip}`)}">`
             + `<path class="cut" stroke="${color}" fill="${color}" d="${pathData(cut)}"/>`
             + (p.showOutlines ? `<path class="outline" stroke="${outline}" d="${pathData(outlines)}"/>` : '')
+            + (p.showFootprints ? `<path class="label" stroke="${label}" d="${pathData(footprints)}"/>` : '')
             + (p.showLabels ? `<path class="label" stroke="${pc.layer.index ? label : outline}" d="${pathData(l)}"/>` : '')
-            + (p.showLabels ? names.map(t => `<text class="name" fill="${label}" font-size="${FONT}" x="${t.x}" y="${t.y}" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('') : '')
+            + (p.showLabels ? names.map(t => `<text class="name" fill="${pc.layer.index ? outline : label}" font-size="${FONT}" x="${t.x}" y="${t.y}" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('') : '')
             + '</g>'
         }),
       ]

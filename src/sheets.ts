@@ -257,13 +257,14 @@ function layerLabel(l: Layer, minWall: number) {
   return label
 }
 
-/** Cut lines (kerf applied), object outlines, label and object names (turned by `rot`) of a piece, in drawing mm. */
+/** Cut lines (kerf applied), object outlines, label, object names (turned by `rot`) and footprints of a piece, in drawing mm. */
 export function pieceShapes(p: Project, s: Sheet, pc: Piece) {
   const ox = s.x + pc.x, oy = s.y + pc.y
   return {
     cut: turn(p.kerf > 0 ? offset(pc.layer.paths, p.kerf / 2) : pc.layer.paths, pc.rot, ox, oy),
     outlines: turn(pc.layer.outlines, pc.rot, ox, oy),
     label: turn(layerLabel(pc.layer, p.box.minWall), pc.rot, ox, oy),
+    footprints: turn(pc.layer.footprints, pc.rot, ox, oy),
     names: pc.layer.names.map(n => ({ ...turn([[n]], pc.rot, ox, oy)[0][0], rot: pc.rot, text: n.text })),
   }
 }
