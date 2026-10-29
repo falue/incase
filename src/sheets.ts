@@ -5,7 +5,7 @@ import type { Material, Project, SheetPlacement } from './model'
 
 export const FONT = 5 // mm, sheet titles and piece labels
 const LABEL_SIZES = [FONT, 3] // mm; the smaller one is tried where the larger does not fit
-const LABEL_MARGIN = 1 // mm of foam around a label
+const LABEL_MARGIN = 1 // mm of foam around a label at least (else the min. wall)
 const SIMPLIFY = 0.3 // mm; keeps the label search fast, covered by LABEL_MARGIN
 const MARGIN = 5 // mm around the drawing
 const GAP = 10 // mm between sheets
@@ -232,18 +232,19 @@ export function sheetTitle(sheets: Sheet[], s: Sheet) {
 const labels = new WeakMap<Layer, PathsD>()
 
 /**
- * The layer's label (its number, as outlines) inside its foam (layer frame), nearest its bottom-left corner;
- * empty if it fits nowhere.
+ * The layer's label (its number, as outlines) inside its foam (layer frame), at least `minWall` from every cut line,
+ * nearest its bottom-left corner; empty if it fits nowhere.
  */
-function layerLabel(l: Layer) {
+function layerLabel(l: Layer, minWall: number) {
   if (labels.has(l)) return labels.get(l)!
   const { outer, holes } = split(l)
   const bin = simplifyPathsD(outer, SIMPLIFY), obstacles = simplifyPathsD(holes, SIMPLIFY)
   const b = getBoundsPathsD(l.paths)
+  const m = Math.max(minWall, LABEL_MARGIN)
   let label: PathsD = []
   for (const size of LABEL_SIZES) {
     const digits = numberOutline(l.index + 1, size), g = getBoundsPathsD(digits)
-    const w = g.right - g.left + 2 * LABEL_MARGIN, h = g.bottom - g.top + 2 * LABEL_MARGIN
+    const w = g.right - g.left + 2 * m, h = g.bottom - g.top + 2 * m
     const box = roundedRect(w, h, 0)!.map(q => ({ x: q.x + (g.left + g.right) / 2, y: q.y + (g.top + g.bottom) / 2 }))
     const free = freePositions([box], bin, obstacles).flat()
     if (free.length) {
@@ -262,6 +263,6 @@ export function pieceShapes(p: Project, s: Sheet, pc: Piece) {
   return {
     cut: turn(p.kerf > 0 ? offset(pc.layer.paths, p.kerf / 2) : pc.layer.paths, pc.rot, ox, oy),
     outlines: turn(pc.layer.outlines, pc.rot, ox, oy),
-    label: turn(layerLabel(pc.layer), pc.rot, ox, oy),
+    label: turn(layerLabel(pc.layer, p.box.minWall), pc.rot, ox, oy),
   }
 }
