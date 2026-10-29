@@ -6,7 +6,7 @@ import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, copyProject, currentName, defaultItem, deleteProject, deepest, groupOf, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, normalize, renameProject, resetUnsaved, saveProject, storedCase, storedProject, unsavedEmpty, setNotchCount, sharedPart, autoStack, positionsKept, uid, uniqueName, units, type CaseDims, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
+import { boxCorners, copyProject, currentName, defaultItem, deleteProject, deepest, groupOf, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, normalize, renameProject, resetUnsaved, saveProject, storedCase, storedProject, unsavedEmpty, setNotchCount, sharedPart, autoStack, allows, forces, slotsKept, SLOTS, uid, uniqueName, units, type CaseDims, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape, type Slot } from './model'
 import { planSheets, type Piece, type Sheet } from './sheets'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
@@ -77,9 +77,6 @@ const ICONS = {
   zFirst: '<rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="8" width="8" height="8" rx="1" stroke-dasharray="2 2"/><path d="M3 12h18"/>',
   group: '<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/><rect x="6" y="6" width="7" height="7" rx="1"/><rect x="11" y="11" width="7" height="7" rx="1"/>',
   ungroup: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/><path d="M14 4l6 6M20 4l-6 6"/>',
-  posAny: '<path d="M4 6h16M4 12h16M4 18h16"/>',
-  posTop: '<rect x="4" y="4" width="16" height="5" rx="1"/><path d="M4 14h16M4 19h16" stroke-dasharray="2 2"/>',
-  posBottom: '<path d="M4 5h16M4 10h16" stroke-dasharray="2 2"/><rect x="4" y="15" width="16" height="5" rx="1"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/>',
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
@@ -423,12 +420,53 @@ function presetPicker() {
   }
 }
 
-/** Material positions in the auto stack: icon and help. */
-const POSITIONS = {
-  any: ['posAny', 'Auto stack: used anywhere'],
-  top: ['posTop', 'Auto stack: always the topmost layer, nowhere else'],
-  bottom: ['posBottom', 'Auto stack: always the bottom layer, nowhere else'],
-} as const
+const SLOT_NAMES: Record<Slot, string> = { top: 'Top layer', middle: 'Layers in between', bottom: 'Bottom layer' }
+
+/** Icon of where a material may go in the stack: one bar per slot, top to bottom; dashed where it may not, a block where it is forced. */
+const slotsIcon = (m: Material) => `<svg viewBox="0 0 24 24">${SLOTS.map((slot, k) => {
+  const y = 5 + 7 * k
+  return forces(m, slot) ? `<rect x="4" y="${y - 2}" width="16" height="4" rx="1" fill="currentColor"/>`
+    : `<path d="M4 ${y}h16"${allows(m, slot) ? ' stroke-width="3"' : ' stroke-dasharray="2 2"'}/>`
+}).join('')}</svg>`
+
+/**
+ * Dropdown: per slot, whether the auto stack may use the material there and (top and bottom only) whether it must.
+ * Force shows only where it may be used; disallowing also unforces it.
+ */
+function slotsMenu(m: Material) {
+  const summary = h('summary', { innerHTML: slotsIcon(m), tip: 'Where the auto stack may or must use this material' })
+  const boxes = new Map<string, HTMLInputElement>()
+  const forceLabels = new Map<Slot, HTMLElement>()
+  // a Force box only where the material may be used
+  const showForce = () => forceLabels.forEach((el, slot) => (el.style.visibility = allows(m, slot) ? '' : 'hidden'))
+  const set = (key: 'slots' | 'forced', slot: Slot, on: boolean) => {
+    const has = key === 'slots' ? allows : forces
+    const list = SLOTS.filter(s => (s === slot ? on : has(m, s)))
+    m[key] = key === 'slots' && list.length === SLOTS.length ? undefined : list.length ? list : undefined
+    boxes.get(`${key}:${slot}`)!.checked = on
+  }
+  const box = (key: 'slots' | 'forced', slot: Slot) => {
+    const el = h('input', { type: 'checkbox', checked: (key === 'slots' ? allows : forces)(m, slot), onchange: () => {
+      set(key, slot, el.checked)
+      if (key === 'slots' && !el.checked && slot !== 'middle') set('forced', slot, false)
+      summary.innerHTML = slotsIcon(m) // the menu stays open: no rebuild
+      showForce()
+      changed()
+    } })
+    boxes.set(`${key}:${slot}`, el)
+    return el
+  }
+  const menu = h('div', { className: 'menu' },
+    h('span', { className: 'hint', textContent: 'May be used on…' }),
+    h('span', { className: 'hint', textContent: 'Force', tip: 'The layer is always this material (or another one forced there)' }),
+    ...SLOTS.flatMap(slot => [
+      h('label', { className: 'check' }, box('slots', slot), SLOT_NAMES[slot]),
+      slot === 'middle' ? h('span') : forceLabels.set(slot, h('label', { className: 'check force' }, box('forced', slot))).get(slot)!,
+    ]),
+  )
+  showForce()
+  return h('details', { className: 'dropdown down slots' }, summary, menu)
+}
 
 function renderMaterials() {
   const ms = project.materials
@@ -440,13 +478,7 @@ function renderMaterials() {
         withTip(color(() => m.color, v => (m.color = v), 'export'), 'Cut line colour of this material in the exported SVG'),
         withTip(Object.assign(text(() => m.name, v => (m.name = v), 'export'), { className: 'grow' }), 'Material name, shown on the layer labels'),
         prop(unit(), size(() => m.thickness, v => (m.thickness = v)), 'Sheet thickness', 'short'),
-        h('button', {
-          className: 'icon' + (m.position ? ' on' : ''), innerHTML: icon(POSITIONS[m.position ?? 'any'][0]), tip: `${POSITIONS[m.position ?? 'any'][1]} · click to change`,
-          onclick: () => {
-            m.position = m.position === undefined ? 'top' : m.position === 'top' ? 'bottom' : undefined
-            changed('materials')
-          },
-        }),
+        slotsMenu(m),
         iconButton('✕', 'Also removes its layers from the stack', () => {
           ms.splice(i, 1)
           project.stack = project.stack.filter(id => id !== m.id)
@@ -1044,7 +1076,7 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
   const colors = project.materials.map(m => m.color.toLowerCase())
   const warnings = [
     diff > 0.01 && `Stack is ${fmtLen(diff)} ${unit()} taller than the case`,
-    project.stackAuto && !positionsKept(project) && 'The auto stack cannot keep the top / bottom materials where they belong',
+    project.stackAuto && !slotsKept(project) && 'The auto stack cannot keep every material where it is allowed',
     ...project.items.map(it => it.z + itemHeight(it) > total + 0.01 && `${it.name} reaches below the stack`),
     ...project.items.map(lidWarning),
     ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
@@ -1295,7 +1327,7 @@ $('plain-export-menu').replaceChildren(
   plainItem('JSON', 'The project incl. materials as a file (or all projects in one), to keep or share; Load opens it again', exportJson),
 )
 addEventListener('pointerdown', e => {
-  for (const menu of [plainExport, projects, alignMenu]) if (!menu.contains(e.target as Node)) menu.open = false
+  for (const menu of document.querySelectorAll<HTMLDetailsElement>('details.dropdown[open]')) if (!menu.contains(e.target as Node)) menu.open = false
 })
 
 function applyTheme(theme: string) {

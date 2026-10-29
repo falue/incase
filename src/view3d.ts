@@ -139,14 +139,14 @@ export class View3D {
 
   /**
    * `onProjection` is called when the camera switches between orthographic and perspective on its own,
-   * `onLayer` when a foam layer is clicked.
+   * `onLayer` when a foam layer is clicked; `onSelect` gets `add` for a Shift-click.
    */
-  constructor(private host: HTMLElement, onSelect: (id: string | null) => void, private onProjection: () => void, onLayer: (index: number) => void) {
+  constructor(private host: HTMLElement, onSelect: (id: string | null, add: boolean) => void, private onProjection: () => void, onLayer: (index: number) => void) {
     this.renderer.setPixelRatio(devicePixelRatio)
     this.renderer.localClippingEnabled = true
     const canvas = this.renderer.domElement
     host.append(canvas, this.viewCube())
-    // a click without dragging selects the object under the pointer, or shows the clicked layer
+    // a click without dragging selects the object under the pointer (Shift: adds or removes it), or shows the clicked layer
     let down = { x: 0, y: 0 }
     canvas.addEventListener('pointerdown', e => (down = { x: e.clientX, y: e.clientY }))
     canvas.addEventListener('pointermove', e => {
@@ -161,7 +161,7 @@ export class View3D {
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera)
       const hit = ray.intersectObjects([...this.ghosts, ...this.slabs])[0]?.object.userData
       if (hit?.layer !== undefined) onLayer(hit.layer)
-      else onSelect(hit?.id ?? null)
+      else if (hit?.id || !e.shiftKey) onSelect(hit?.id ?? null, e.shiftKey)
     })
     const sun = new THREE.DirectionalLight(0xffffff, 2)
     sun.position.set(300, 800, 500)

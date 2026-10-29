@@ -69,7 +69,6 @@ button.primary { background: var(--accent); color: var(--accent-text); }
 button.icon { padding: 4px 7px; background: none; color: var(--muted); }
 button.icon:hover { background: var(--hover); color: var(--text); }
 button.icon svg { width: 14px; height: 14px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; }
-button.icon.on { color: var(--accent); }
 
 select, input[type='text'], input[type='number'] {
   min-width: 0;
@@ -150,6 +149,12 @@ details.dropdown.flyout > .menu { top: 0; bottom: auto; left: calc(100% + 4px); 
 details.dropdown.flyout > .menu button { display: flex; align-items: center; gap: 8px; text-align: left; }
 details.dropdown.flyout > .menu svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; flex: none; }
 details.dropdown.down > .menu { top: calc(100% + 4px); bottom: auto; left: auto; right: 0; min-width: 240px; }
+details.dropdown.slots > summary { padding: 4px 7px; background: none; color: var(--muted); }
+details.dropdown.slots > summary svg { width: 14px; height: 14px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; }
+details.dropdown.slots > .menu { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 6px; min-width: 200px; }
+details.dropdown.slots > .menu > * { white-space: nowrap; }
+details.dropdown.slots > .menu > .hint { padding: 2px 8px; }
+details.dropdown.slots .force { justify-content: center; }
 #projects > summary { display: flex; gap: 8px; align-items: center; padding: 4px 8px 4px 10px; max-width: 220px; border: 1px solid var(--line); cursor: pointer; }
 #project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #projects > summary::after { content: '▾'; color: var(--muted); }

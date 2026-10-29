@@ -8,9 +8,19 @@ export interface Material {
   color: string
   /** Sizes of the stock sheets in mm and how many of each are in stock (missing = unlimited); none (or 0) = no size limit. */
   sheets?: { w: number; h: number; count?: number }[]
-  /** Auto stack: always the topmost or the bottom layer and nowhere else; missing = anywhere. */
-  position?: 'top' | 'bottom'
+  /** Auto stack: where this material may go; missing = everywhere. */
+  slots?: Slot[]
+  /** Auto stack: the top or bottom layer is this material (or another one forced there). */
+  forced?: Slot[]
 }
+export type Slot = 'top' | 'middle' | 'bottom'
+export const SLOTS: Slot[] = ['top', 'middle', 'bottom']
+export const allows = (m: Material, slot: Slot) => !m.slots || m.slots.includes(slot)
+export const forces = (m: Material, slot: Slot) => !!m.forced?.includes(slot)
+
+/** May `m` go into `slot`: only forced materials where any is forced, else the allowed ones. */
+export const fits = (materials: Material[], m: Material, slot: Slot) =>
+  materials.some(o => forces(o, slot)) ? forces(m, slot) : allows(m, slot)
 /**
  * A layer placed by hand on stock sheet number `sheet` (w × h) of its material: its origin (the case centre)
  * in mm from the sheet corner, turned by `rot` degrees clockwise.
@@ -250,23 +260,23 @@ export const LAYER_COST = 10
  * the gap under the case rim plus how far objects reaching below the stack stick out (they stand on the case floor),
  * where one more layer is worth it only if it saves more than `layerCost` mm of these in total, then materials earlier
  * in the list.
- * Materials with a `position` go only there, one of them always (unless that cannot fit: then `positions` is dropped);
+ * The top, middle and bottom layers use only materials allowed or forced there (see `fits`; ignored if that leaves no stack);
  * with `solidBase`, objects stand on the bottom layer instead of sinking into it.
- * Between the boundaries objects rest on, preferred materials go on top; the top and bottom layer stay put.
+ * Between the boundaries objects rest on, preferred materials go on top; restricted top and bottom layers stay put.
  */
-export function suggestStack(materials: Material[], depth: number, bottoms: number[], layerCost = LAYER_COST, solidBase = false, positions = true): string[] {
+export function suggestStack(materials: Material[], depth: number, bottoms: number[], layerCost = LAYER_COST, solidBase = false, slots = true): string[] {
   const th = materials.map(m => Math.round(m.thickness * 10))
   const target = Math.max(0, Math.round(depth * 10))
   const bs = bottoms.map(b => Math.round(b * 10)).filter(b => b > 0)
-  const at = (where?: 'top' | 'bottom') => [...th.keys()].filter(i => th[i] > 0 && (positions ? materials[i].position === where : !where))
-  const tops = at('top'), bottomMats = at('bottom'), middle = at()
-  // best[s]: cheapest stack summing to s; cost = [layers × layerCost + sinking, preference], its last layer spans from..s
+  const [tops, middle, bottomMats] = SLOTS.map(slot => [...th.keys()].filter(i => th[i] > 0 && (!slots || fits(materials, materials[i], slot))))
+  const restricted = slots && materials.some(m => m.forced?.length || SLOTS.some(slot => !allows(m, slot)))
+  // best[s]: cheapest stack above the bottom layer summing to s, its first layer a top material, the others middle ones;
+  // cost = [layers × layerCost + sinking, preference], its last layer spans from..s
   const best: ({ cost: number[]; from: number; mat: number } | undefined)[] = [{ cost: [0, 0], from: 0, mat: -1 }]
   for (let s = 1; s <= target; s++) {
-    for (const i of [...middle, ...tops]) {
+    for (const i of new Set([...tops, ...middle])) {
       const u = th[i]
-      // the first layer is a top material if there is one, the others are middle ones
-      const prev = u <= s && (s === u && tops.length ? tops : middle).includes(i) ? best[s - u] : undefined
+      const prev = u <= s && (s === u ? tops : middle).includes(i) ? best[s - u] : undefined
       if (!prev) continue
       const sink = bs.reduce((sum, b) => (b > s - u && b <= s ? sum + s - b : sum), 0)
       const cost = [prev.cost[0] + layerCost * 10 + sink, prev.cost[1] + i]
@@ -274,27 +284,26 @@ export function suggestStack(materials: Material[], depth: number, bottoms: numb
     }
   }
   const thinnest = Math.min(...th.filter(u => u > 0))
-  // the stack above s, plus a bottom layer `j` (-1: none): a bottom material, or any middle one as the solid base
+  // the stack above s plus its bottom layer j (alone: also the top layer)
   let end = 0, base = -1, endCost = [Infinity]
-  const lasts = bottomMats.length ? bottomMats : solidBase ? middle : [-1]
   best.forEach((b, s) => {
-    for (const j of lasts) {
-      const total = s + (j < 0 ? 0 : th[j])
-      if (!b || (tops.length && s === 0) || total > target || target - total >= thinnest) continue
+    for (const j of bottomMats) {
+      const total = s + th[j]
+      if (!b || (s === 0 && !tops.includes(j)) || total > target || target - total >= thinnest) continue
       // objects below s sink into the bottom layer, or stand on it if it is solid
-      const floor = j < 0 || solidBase ? s : total
+      const floor = solidBase ? s : total
       const below = bs.reduce((sum, x) => sum + (x > s && x <= floor ? floor - x : Math.max(0, x - floor)), 0)
-      const cost = [b.cost[0] + (j < 0 ? 0 : layerCost * 10) + target - total + below, b.cost[1] + Math.max(j, 0), -total]
+      const cost = [b.cost[0] + layerCost * 10 + target - total + below, b.cost[1] + j, -total]
       if (cheaper(cost, endCost)) [end, base, endCost] = [s, j, cost]
     }
   })
-  if (endCost[0] === Infinity && positions) return suggestStack(materials, depth, bottoms, layerCost, solidBase, false)
+  if (endCost[0] === Infinity) return slots ? suggestStack(materials, depth, bottoms, layerCost, solidBase, false) : []
   const layers: { a: number; i: number; keep: boolean }[] = []
   for (let s = end; s > 0; s = best[s]!.from) {
     const { from, mat } = best[s]!
-    layers.unshift({ a: from, i: mat, keep: tops.includes(mat) })
+    layers.unshift({ a: from, i: mat, keep: restricted && from === 0 })
   }
-  if (base >= 0) layers.push({ a: end, i: base, keep: true })
+  layers.push({ a: end, i: base, keep: restricted || solidBase })
   const runs: number[][] = [[]]
   for (const { a, i, keep } of layers) {
     if (keep) runs.push([i], [])
@@ -306,13 +315,13 @@ export function suggestStack(materials: Material[], depth: number, bottoms: numb
   return runs.flatMap(r => r.sort((x, y) => x - y)).map(i => materials[i].id)
 }
 
-/** True if the stack has a top and a bottom material wherever the materials ask for one, and none elsewhere. */
-export function positionsKept(p: Project) {
-  const where = (id: string) => p.materials.find(m => m.id === id)?.position
-  const asked = (pos: 'top' | 'bottom') => p.materials.some(m => m.position === pos)
+/** True if every layer of the stack uses a material allowed there (see `fits`). */
+export function slotsKept(p: Project) {
+  const last = p.stack.length - 1
   return p.stack.every((id, i) => {
-    const pos = where(id), want = i === 0 && asked('top') ? 'top' : i === p.stack.length - 1 && asked('bottom') ? 'bottom' : undefined
-    return pos === want
+    const m = p.materials.find(m => m.id === id)
+    const ok = (slot: Slot) => fits(p.materials, m!, slot)
+    return !m || ((i > 0 || ok('top')) && (i < last || ok('bottom')) && (i === 0 || i === last || ok('middle')))
   })
 }
 
