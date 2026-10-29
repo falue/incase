@@ -5,7 +5,7 @@ import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, copyProject, currentName, defaultItem, deleteProject, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, renameProject, resetUnsaved, saveProject, setNotchCount, sharedPart, suggestStack, uid, uniqueName, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
+import { boxCorners, copyProject, currentName, defaultItem, deleteProject, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, renameProject, resetUnsaved, saveProject, unsavedEmpty, setNotchCount, sharedPart, suggestStack, uid, uniqueName, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
 import { planSheets, type Piece, type Sheet } from './sheets'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
@@ -1014,7 +1014,8 @@ function renderProjects() {
       }),
     ] : []))
   }
-  $('project-menu').replaceChildren(entry(''), ...projectNames().map(entry))
+  // the unsaved project is listed while it is open or holds something
+  $('project-menu').replaceChildren(...(!current || !unsavedEmpty() ? [entry('')] : []), ...projectNames().map(entry))
 }
 
 $('save').onclick = () => {

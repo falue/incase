@@ -346,6 +346,12 @@ export function nameProject(p: Project, name: string) {
   flushSave()
 }
 
+/** True if the unsaved project holds nothing: no objects, the default case. */
+export function unsavedEmpty() {
+  const p = read(UNSAVED)
+  return !p || (!p.items?.length && JSON.stringify(p.box) === JSON.stringify(defaultProject().box))
+}
+
 /** Empties the unsaved project (after it got a name). */
 export const resetUnsaved = (p: Project) => localStorage.setItem(UNSAVED, JSON.stringify(part(newProject(p), false)))
 
