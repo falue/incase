@@ -47,7 +47,7 @@ function drawPiece(doc: jsPDF, p: Project, pc: Piece, dx: number, dy: number, fo
   doc.setDrawColor(pc.color)
   draw(doc, pc.cut, dx, dy)
   if (!p.showLabels) return
-  doc.setTextColor(p.labelColor).setFontSize(font * PT_PER_MM)
+  doc.setTextColor(pc.labelColor).setFontSize(font * PT_PER_MM)
   doc.text(pc.label.replace(/·/g, '-'), pc.labelAt.x + dx, pc.labelAt.y + dy)
 }
 

@@ -20,6 +20,8 @@ export interface Piece {
   outlines: Contour[]
   color: string
   label: string
+  /** The top layer's label is in the outline colour, as its face stays visible. */
+  labelColor: string
   labelAt: PointD
 }
 
@@ -39,6 +41,7 @@ export function layout(p: Project, layers: Layer[]) {
       cut: contours(p.kerf > 0 ? offset(layer.paths, p.kerf / 2) : layer.paths, cx, cy),
       outlines: contours(layer.outlines, cx, cy),
       color,
+      labelColor: layer.index ? p.labelColor : p.outlineColor,
       label: `${i + 1} · ${name} · ${thickness} mm`,
       labelAt: { x, y: MARGIN + W + 4 + FONT },
     }
@@ -68,7 +71,7 @@ function drawn(p: Project, layers: Layer[], onSheets: boolean) {
       width,
       height,
       frames: [] as Contour[],
-      titles: pieces.map(pc => ({ ...pc.labelAt, text: pc.label })),
+      titles: pieces.map(pc => ({ ...pc.labelAt, text: pc.label, color: pc.labelColor })),
       pieces: pieces.map((pc, i) => ({ layer: layers[i], cut: pc.cut, outlines: pc.outlines, label: [] as Contour[] })),
     }
   }
@@ -79,7 +82,7 @@ function drawn(p: Project, layers: Layer[], onSheets: boolean) {
     width,
     height,
     frames: sheets.filter(s => !s.unlimited).map(frame),
-    titles: sheets.map(s => ({ x: s.x, y: s.y - TITLE_RAISE, text: sheetTitle(sheets, s) })),
+    titles: sheets.map(s => ({ x: s.x, y: s.y - TITLE_RAISE, text: sheetTitle(sheets, s), color: p.labelColor })),
     pieces: sheets.flatMap(s => s.pieces.map(pc => {
       const { cut, outlines, label } = pieceShapes(p, s, pc)
       return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), label: contours(label) }
@@ -107,7 +110,7 @@ ${pieces.filter(pc => pc.outlines.length).map(pc => `<path d="${svgPath(pc.outli
 ${pieces.map(pc => `<path stroke="${pc.layer.material.color}" d="${svgPath(pc.cut)}"/>`).join('\n')}
 </g>
 <g id="labels" fill="${p.labelColor}" font-family="sans-serif" font-size="${FONT}">
-${titles.map(t => `<text x="${t.x}" y="${t.y}">${esc(t.text)}</text>`).join('\n')}
+${titles.map(t => `<text x="${t.x}" y="${t.y}"${t.color === p.labelColor ? '' : ` fill="${t.color}"`}>${esc(t.text)}</text>`).join('\n')}
 ${pieces.filter(pc => pc.label.length).map(pc => `<path fill="none" stroke="${pc.layer.index ? p.labelColor : p.outlineColor}" stroke-width="${STROKE}" d="${svgPath(pc.label)}"/>`).join('\n')}
 </g>
 </svg>
@@ -157,10 +160,11 @@ export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): strin
     }
   }
   const label = aci(p.labelColor)
-  const text = (x: number, y: number, s: string) =>
-    out.push(0, 'TEXT', 8, 'LABELS', 62, label, 10, n(x), 20, n(height - y), 40, FONT, 1, s.replace(/·/g, '-'))
   polylines(frames, 'SHEETS', aci(p.outlineColor))
-  for (const t of titles) text(t.x, t.y, t.text)
+  for (const t of titles) {
+    const top = t.color !== p.labelColor
+    out.push(0, 'TEXT', 8, top ? 'OUTLINES' : 'LABELS', 62, aci(t.color), 10, n(t.x), 20, n(height - t.y), 40, FONT, 1, t.text.replace(/·/g, '-'))
+  }
   for (const pc of pieces) {
     polylines(pc.outlines, 'OUTLINES', aci(p.outlineColor))
     polylines(pc.cut, `CUT_${pc.layer.index + 1}_${pc.layer.material.name.replace(/[^\w-]+/g, '_')}`, aci(pc.layer.material.color))
