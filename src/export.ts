@@ -89,7 +89,10 @@ function drawn(p: Project, layers: Layer[], onSheets: boolean) {
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)
 
-/** One SVG in mm (see drawing), cut lines in the material colours; piece labels are outlines, turned with their piece. */
+/**
+ * One SVG in mm (see drawing), cut lines in the material colours; piece labels are outlines, turned with their piece.
+ * The top layer's label is in the outline colour, as its face stays visible.
+ */
 export function exportSvg(p: Project, layers: Layer[], onSheets: boolean): string {
   const { width, height, frames, titles, pieces } = drawing(p, layers, onSheets)
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -105,7 +108,7 @@ ${pieces.map(pc => `<path stroke="${pc.layer.material.color}" d="${svgPath(pc.cu
 </g>
 <g id="labels" fill="${p.labelColor}" font-family="sans-serif" font-size="${FONT}">
 ${titles.map(t => `<text x="${t.x}" y="${t.y}">${esc(t.text)}</text>`).join('\n')}
-${pieces.filter(pc => pc.label.length).map(pc => `<path fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}" d="${svgPath(pc.label)}"/>`).join('\n')}
+${pieces.filter(pc => pc.label.length).map(pc => `<path fill="none" stroke="${pc.layer.index ? p.labelColor : p.outlineColor}" stroke-width="${STROKE}" d="${svgPath(pc.label)}"/>`).join('\n')}
 </g>
 </svg>
 `
@@ -134,7 +137,8 @@ function aci(hex: string): number {
 
 /**
  * One DXF (R12, mm, y up) with the same content as the SVG: closed polylines with arc bulges,
- * one layer per foam layer (CUT_1_<material> …) in the nearest AutoCAD colour, plus SHEETS, OUTLINES and LABELS.
+ * one layer per foam layer (CUT_1_<material> …) in the nearest AutoCAD colour, plus SHEETS, OUTLINES and LABELS
+ * (the top layer's label goes to OUTLINES, as in the SVG).
  */
 export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): string {
   const { height, frames, titles, pieces } = drawing(p, layers, onSheets)
@@ -160,7 +164,8 @@ export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): strin
   for (const pc of pieces) {
     polylines(pc.outlines, 'OUTLINES', aci(p.outlineColor))
     polylines(pc.cut, `CUT_${pc.layer.index + 1}_${pc.layer.material.name.replace(/[^\w-]+/g, '_')}`, aci(pc.layer.material.color))
-    polylines(pc.label, 'LABELS', label)
+    if (pc.layer.index) polylines(pc.label, 'LABELS', label)
+    else polylines(pc.label, 'OUTLINES', aci(p.outlineColor))
   }
   out.push(0, 'ENDSEC', 0, 'EOF')
   return out.join('\n') + '\n'

@@ -72,7 +72,7 @@ export class SheetView {
           return `<g class="${cls}" data-sheet="${i}" data-piece="${j}" data-tip="${esc(`Layer ${pc.layer.index + 1} · ${tip}`)}">`
             + `<path class="cut" stroke="${color}" fill="${color}" d="${pathData(cut)}"/>`
             + (p.showOutlines ? `<path class="outline" stroke="${outline}" d="${pathData(outlines)}"/>` : '')
-            + (p.showLabels ? `<path class="label" stroke="${label}" d="${pathData(l)}"/>` : '')
+            + (p.showLabels ? `<path class="label" stroke="${pc.layer.index ? label : outline}" d="${pathData(l)}"/>` : '')
             + '</g>'
         }),
       ]
