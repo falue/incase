@@ -86,7 +86,7 @@ export class SheetView {
           return `<g class="${cls}" data-sheet="${i}" data-piece="${j}" data-tip="${esc(`Layer ${pc.layer.index + 1} · ${tip}`)}">`
             + `<path class="cut" stroke="${color}" fill="${color}" d="${pathData(cut)}"/>`
             + (p.showOutlines ? `<path class="outline" stroke="${outline}" d="${pathData(outlines)}"/>` : '')
-            + (p.showFootprints ? `<path class="label" stroke="${label}" d="${pathData(footprints)}"/>` : '')
+            + (p.showFootprints ? `<path class="label" stroke="${label}" d="${svgLines(footprints)}"/>` : '')
             + (p.showLabels ? `<path class="label" stroke="${pc.layer.index ? label : outline}" d="${svgLines(l)}"/>` : '')
             + (p.showNames ? names.map(t => `<text class="name" fill="${pc.layer.index ? outline : label}" font-size="${FONT}" x="${t.x}" y="${t.y}" transform="rotate(${t.rot} ${t.x} ${t.y})">${esc(t.text)}</text>`).join('') : '')
             + '</g>'

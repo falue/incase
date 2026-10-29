@@ -48,7 +48,7 @@ export function layout(p: Project, layers: Layer[]) {
       x, y: MARGIN, w: L, h: W + 4 + FONT,
       cut: contours(p.kerf > 0 ? offset(layer.paths, p.kerf / 2) : layer.paths, cx, cy),
       outlines: contours(layer.outlines, cx, cy),
-      footprints: contours(layer.footprints, cx, cy),
+      footprints: contours(layer.footprints, cx, cy, true),
       color,
       labelColor: layer.index ? p.labelColor : p.outlineColor,
       label: `${i + 1} · ${name} · ${thickness} mm`,
@@ -96,7 +96,7 @@ function drawn(p: Project, layers: Layer[], onSheets: boolean) {
     titles: sheets.map(s => ({ x: s.x, y: s.y - TITLE_RAISE, text: sheetTitle(sheets, s), color: p.labelColor })),
     pieces: sheets.flatMap(s => s.pieces.map(pc => {
       const { cut, outlines, footprints, label, names } = pieceShapes(p, s, pc)
-      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), footprints: contours(footprints), label, names: names.map(n => ({ ...n, color: nameColor(p, pc.layer) })) }
+      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), footprints: contours(footprints, 0, 0, true), label, names: names.map(n => ({ ...n, color: nameColor(p, pc.layer) })) }
     })),
   }
 }
@@ -152,7 +152,7 @@ function aci(hex: string): number {
 }
 
 /**
- * One DXF (R12, mm, y up) with the same content as the SVG: closed polylines with arc bulges,
+ * One DXF (R12, mm, y up) with the same content as the SVG: polylines with arc bulges (closed but the footprints),
  * one layer per foam layer (CUT_1_<material> …) in the nearest AutoCAD colour, plus SHEETS, OUTLINES and LABELS
  * (the top layer's label goes to OUTLINES, as in the SVG).
  */
@@ -162,11 +162,11 @@ export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): strin
   const n = (v: number) => Math.round(v * 1000) / 1000
   const polylines = (cs: Contour[], layer: string, color: number) => {
     for (const c of cs) {
-      out.push(0, 'POLYLINE', 8, layer, 62, color, 66, 1, 70, 1)
+      out.push(0, 'POLYLINE', 8, layer, 62, color, 66, 1, 70, c.open ? 0 : 1)
       // each vertex carries the bulge of the segment leaving it: tan(angle / 4), positive = counter-clockwise (y up)
-      const points = [c.start, ...c.segments.slice(0, -1).map(s => s.to)]
+      const points = [c.start, ...(c.open ? c.segments : c.segments.slice(0, -1)).map(s => s.to)]
       points.forEach((q, i) => {
-        const span = c.segments[i].arc?.span ?? 0
+        const span = c.segments[i]?.arc?.span ?? 0
         out.push(0, 'VERTEX', 8, layer, 10, n(q.x), 20, n(height - q.y), 42, n(-Math.tan(span / 4)))
       })
       out.push(0, 'SEQEND', 8, layer)

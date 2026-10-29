@@ -1,6 +1,6 @@
 import { FillRule, pointInPolygonD, PointInPolygonResult, unionD, type PathsD } from 'clipper2-ts'
 import { AREA_TOL, caseOutline, itemCuts, objectOutline, offset, pathData, place, resting, type Layer } from './geometry'
-import { itemBox, perimeterParam, perimeterPoint, setItemSize, snapNotch, type Item, type Project } from './model'
+import { groupOf, itemBox, perimeterParam, perimeterPoint, setItemSize, snapNotch, type Item, type Project } from './model'
 
 const NS = 'http://www.w3.org/2000/svg'
 const MARGIN = 30
@@ -65,7 +65,7 @@ const CLOSE = 8 // px; clicking this close to the first point closes a drawn pol
 const EDGE_HIT = 6 // px; double-clicking this close to a polygon edge inserts a point
 
 type Drag =
-  // `only`: a click on a member of a multi-selection that does not move selects just that one
+  // `only`: a click on a member of a multi-selection that does not move selects just that one (with its group)
   | { mode: 'move'; group: { item: Item; x: number; y: number }[]; px: number; py: number; moved: boolean; only: string | null }
   | { mode: 'rotate'; item: Item }
   | { mode: 'notch'; item: Item; index: number }
@@ -523,13 +523,14 @@ export class View2D {
       this.drag = { mode: 'vertex', item: this.selected, index: this.vertex }
       this.rerender()
     } else {
-      // drags the selection it belongs to (after a Shift-click: the new one), else just this item
-      const p = this.point(e), member = this.selection.includes(id!)
-      const ids = e.shiftKey ? (member ? [] : [...this.selection, id]) : member ? this.selection : [id]
+      // drags the selection it belongs to (after a Shift-click: the new one), else just this item and its group
+      const p = this.point(e), member = this.selection.includes(id!), all = this.last![0].items
+      const own = groupOf(this.last![0], all.find(it => it.id === id)!).map(it => it.id)
+      const ids = e.shiftKey ? (member ? [] : [...this.selection, ...own]) : member ? this.selection : own
       this.pick = { x: p.x, y: p.y }
       this.drag = {
-        mode: 'move', px: p.x, py: p.y, moved: false, only: !e.shiftKey && member && this.selection.length > 1 ? id : null,
-        group: this.items.filter(it => ids.includes(it.id)).map(item => ({ item, x: item.x, y: item.y })),
+        mode: 'move', px: p.x, py: p.y, moved: false, only: !e.shiftKey && member && this.selection.length > own.length ? id : null,
+        group: all.filter(it => ids.includes(it.id)).map(item => ({ item, x: item.x, y: item.y })),
       }
       if (e.shiftKey || !member) this.ctl.select(id, e.shiftKey)
     }

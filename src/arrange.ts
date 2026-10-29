@@ -1,10 +1,21 @@
 import { areaPathsD, differenceD, FillRule, getBoundsPathsD, minkowskiSumD, simplifyPathsD, unionD, type PathsD } from 'clipper2-ts'
 import { caseOutline, itemCuts, offset, wallConflicts, stackTotal } from './geometry'
-import type { Item, Project } from './model'
+import { units, type Item, type Project } from './model'
 
 // notches and polygons are asymmetric; boxes and ovals repeat after 180°, round shapes never change
 const rotations = (it: Item) =>
   it.notches.length || it.shape === 'polygon' ? [0, 90, 180, 270] : it.shape === 'box' || it.shape === 'lying' || it.d !== it.d2 ? [0, 90] : [it.rot]
+/** Turns (degrees, added to every member's rotation) to try for a unit (a group or a single item). */
+const turns = (u: Item[]) => (u.length > 1 ? [0, 90, 180, 270] : rotations(u[0]).map(r => r - u[0].rot))
+
+/** A member of unit `u` once the unit's first item is placed at (x, y) and the unit turned by `turn` degrees about it. */
+function moved(u: Item[], it: Item, x: number, y: number, turn: number): Placement {
+  const a = (turn * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a), dx = it.x - u[0].x, dy = it.y - u[0].y
+  return { x: x + dx * c - dy * s, y: y + dx * s + dy * c, rot: it.rot + turn }
+}
+
+/** Cutouts of all members of `u` with its first item at (0, 0), turned by `turn`. */
+const unitCuts = (u: Item[], turn: number) => unionD(u.flatMap(it => itemCuts({ ...it, ...moved(u, it, 0, 0, turn) }, -Infinity)), FillRule.NonZero)
 const SIMPLIFY = 0.3 // mm; keeps the search fast, covered by MARGIN
 const MARGIN = 0.5 // mm added to every gap
 const SPREAD = { simplify: 0.5, maxStep: 16, minStep: 0.25, passes: 10 } // mm; even spreading
@@ -31,26 +42,25 @@ export function freePositions(part: PathsD, bin: PathsD, obstacles: PathsD) {
 }
 
 /**
- * Packs the items into the bin, largest first, using no-fit polygons (the method SVGnest uses):
- * each item goes to the free position and rotation that keeps the bounding box of all placed items smallest.
+ * Packs the units (groups and single items) into the bin, largest first, using no-fit polygons (the method SVGnest
+ * uses): each goes to the free position and rotation that keeps the bounding box of all placed ones smallest.
  * `gap` is the minimum distance between items and to the bin edge.
  */
 function pack(p: Project, outline: PathsD, gap: number, tolerance: number) {
   const bin = simplifyPathsD(offset(outline, -gap), tolerance)
-  const footprint = (it: Item, rot: number) =>
-    simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0, rot }, -Infinity), FillRule.NonZero), tolerance)
+  const footprint = (u: Item[], turn: number) => simplifyPathsD(unitCuts(u, turn), tolerance)
 
-  const order = p.items
-    .map(it => ({ it, area: Math.abs(areaPathsD(footprint(it, 0))) }))
+  const order = units(p.items)
+    .map(u => ({ u, area: Math.abs(areaPathsD(footprint(u, 0))) }))
     .sort((a, b) => b.area - a.area)
   const placements = new Map<Item, Placement>()
   let placed: PathsD = [] // placed footprints grown by the gap
   let box: Bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity } // of the placed footprints
 
-  for (const { it } of order) {
+  for (const { u } of order) {
     let best: (Placement & { part: PathsD; score: number }) | null = null
-    for (const rot of rotations(it)) {
-      const part = footprint(it, rot)
+    for (const rot of turns(u)) {
+      const part = footprint(u, rot)
       const free = freePositions(part, bin, placed)
       const b = getBoundsPathsD(part)
       for (const q of free.flat()) {
@@ -62,7 +72,7 @@ function pack(p: Project, outline: PathsD, gap: number, tolerance: number) {
     }
     if (!best) continue
     const { x, y } = best
-    placements.set(it, { x, y, rot: best.rot })
+    for (const it of u) placements.set(it, moved(u, it, x, y, best.rot))
     const at = best.part.map(path => path.map(q => ({ x: q.x + x, y: q.y + y })))
     placed = unionD([...placed, ...offset(at, gap)], FillRule.NonZero)
     const b = getBoundsPathsD(at)
@@ -94,22 +104,19 @@ function outlineDistance(a: PathsD, b: PathsD, dx: number, dy: number) {
 }
 
 /**
- * Moves each item in shrinking steps towards the spot where its distance to the nearest item or wall is largest,
- * so space between items and to the case ends up about equal. Steps stay below that distance, so nothing can pass
- * through anything, and no distance ever shrinks below the starting minimum.
+ * Moves each unit (group or single item) in shrinking steps towards the spot where its distance to the nearest unit or
+ * wall is largest, so space between them and to the case ends up about equal. Steps stay below that distance, so
+ * nothing can pass through anything, and no distance ever shrinks below the starting minimum.
  */
 function spread(p: Project, outline: PathsD) {
-  const parts = p.items.map(it => ({
-    it,
-    shape: simplifyPathsD(unionD(itemCuts({ ...it, x: 0, y: 0 }, -Infinity), FillRule.NonZero), SPREAD.simplify),
-  }))
+  const parts = units(p.items).map(u => ({ u, it: u[0], shape: simplifyPathsD(unitCuts(u, 0), SPREAD.simplify) }))
   const room = (i: number, x: number, y: number) =>
     parts.reduce((c, o, j) => (j === i ? c : Math.min(c, outlineDistance(parts[i].shape, o.shape, o.it.x - x, o.it.y - y))),
       outlineDistance(outline, parts[i].shape, x, y))
   for (let step = SPREAD.maxStep; step >= SPREAD.minStep; step /= 2) {
     for (let pass = 0, moved = true; moved && pass < SPREAD.passes; pass++) {
       moved = false
-      parts.forEach(({ it }, i) => {
+      parts.forEach(({ u, it }, i) => {
         const c = room(i, it.x, it.y), d = Math.min(step, c * 0.9)
         let best = { c, x: it.x, y: it.y }
         for (const [ux, uy] of DIRECTIONS) {
@@ -117,7 +124,8 @@ function spread(p: Project, outline: PathsD) {
           if (nc > best.c + 1e-3) best = { c: nc, x, y }
         }
         if (best.c > c) {
-          Object.assign(it, { x: best.x, y: best.y })
+          const dx = best.x - it.x, dy = best.y - it.y
+          for (const m of u) Object.assign(m, { x: m.x + dx, y: m.y + dy })
           moved = true
         }
       })

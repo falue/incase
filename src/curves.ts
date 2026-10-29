@@ -39,8 +39,8 @@ const pt = (p: PointD) => `${num(p.x)} ${num(p.y)}`
 /** A contour piece to `to`: a straight line, or an arc around a circle with signed `span`
  * (radians; positive = clockwise on screen, where y points down). */
 export type Segment = { to: PointD; arc?: Circle & { span: number } }
-/** Closed contour of lines and arcs. */
-export interface Contour { start: PointD; segments: Segment[] }
+/** Contour of lines and arcs; closed unless `open`. */
+export interface Contour { start: PointD; segments: Segment[]; open?: boolean }
 
 /** Arc segments along circle `c` from pts[i] to pts[j]; split in two if longer than MAX_SPAN. */
 function arc(pts: PointD[], i: number, j: number, c: Circle): Segment[] {
@@ -54,8 +54,8 @@ function arc(pts: PointD[], i: number, j: number, c: Circle): Segment[] {
   return [...arc(pts, i, m, c), ...arc(pts, m, j, c)]
 }
 
-/** Turns polygons back into lines and circular arcs, moved by (dx, dy). */
-export function contours(paths: PathsD, dx = 0, dy = 0): Contour[] {
+/** Turns polygons (`open`: polylines) back into lines and circular arcs, moved by (dx, dy). */
+export function contours(paths: PathsD, dx = 0, dy = 0, open = false): Contour[] {
   return paths.map(raw => {
     const path = raw.filter((p, k) => {
       const prev = raw[(k + raw.length - 1) % raw.length]
@@ -63,8 +63,8 @@ export function contours(paths: PathsD, dx = 0, dy = 0): Contour[] {
     })
     // start at a corner (a point not inside a smooth arc) so no arc is split at the start
     const n = path.length, at = (k: number) => path[(k + n) % n]
-    const start = Math.max(0, path.findIndex((_, k) => !fit([at(k - 1), at(k), at(k + 1)], 0, 2)))
-    const pts = [...path.slice(start), ...path.slice(0, start + 1)].map(p => ({ x: p.x + dx, y: p.y + dy }))
+    const start = open ? 0 : Math.max(0, path.findIndex((_, k) => !fit([at(k - 1), at(k), at(k + 1)], 0, 2)))
+    const pts = (open ? path : [...path.slice(start), ...path.slice(0, start + 1)]).map(p => ({ x: p.x + dx, y: p.y + dy }))
     const segments: Segment[] = []
     for (let i = 0; i < pts.length - 1;) {
       // grow an arc from i as far as the points stay on one circle (at least two segments)
@@ -80,7 +80,7 @@ export function contours(paths: PathsD, dx = 0, dy = 0): Contour[] {
         i = j
       } else segments.push({ to: pts[++i] })
     }
-    return { start: pts[0], segments }
+    return { start: pts[0], segments, open }
   })
 }
 
@@ -91,4 +91,4 @@ export const svgLines = (paths: PathsD) => paths.map(l => 'M' + l.map(pt).join('
 export const svgPath = (cs: Contour[]) =>
   cs.map(c => `M${pt(c.start)}` + c.segments.map(({ to, arc }) =>
     arc ? `A${num(arc.r)} ${num(arc.r)} 0 ${Math.abs(arc.span) > Math.PI ? 1 : 0} ${arc.span > 0 ? 1 : 0} ${pt(to)}` : `L${pt(to)}`,
-  ).join('') + 'Z').join('')
+  ).join('') + (c.open ? '' : 'Z')).join('')

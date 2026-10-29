@@ -68,6 +68,8 @@ button:disabled { opacity: 0.35; cursor: default; }
 button.primary { background: var(--accent); color: var(--accent-text); }
 button.icon { padding: 4px 7px; background: none; color: var(--muted); }
 button.icon:hover { background: var(--hover); color: var(--text); }
+button.icon svg { width: 14px; height: 14px; display: block; fill: none; stroke: currentColor; stroke-width: 1.6; }
+button.icon.on { color: var(--accent); }
 
 select, input[type='text'], input[type='number'] {
   min-width: 0;
@@ -230,6 +232,7 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 .outliner button { display: flex; align-items: center; gap: 8px; text-align: left; background: none; padding: 5px 8px; }
 .outliner button:hover { background: var(--hover); }
 .outliner button.selected { background: var(--selected); }
+.outliner button.member { padding-left: 24px; }
 .outliner svg { width: 14px; height: 14px; fill: none; stroke: var(--muted); stroke-width: 1.5; flex: none; }
 
 /* status bar */

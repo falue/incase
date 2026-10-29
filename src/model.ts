@@ -8,6 +8,8 @@ export interface Material {
   color: string
   /** Sizes of the stock sheets in mm and how many of each are in stock (missing = unlimited); none (or 0) = no size limit. */
   sheets?: { w: number; h: number; count?: number }[]
+  /** Auto stack: always the topmost or the bottom layer and nowhere else; missing = anywhere. */
+  position?: 'top' | 'bottom'
 }
 /**
  * A layer placed by hand on stock sheet number `sheet` (w × h) of its material: its origin (the case centre)
@@ -43,6 +45,8 @@ export interface Item extends Record<Dim, number> {
   notchDepth: number
   /** Fillet radius where notches meet the object or each other. */
   notchR: number
+  /** Items sharing a group id move, rotate and sink together. */
+  group?: string
 }
 
 export interface CaseDims {
@@ -95,7 +99,10 @@ export interface Project {
   spacing?: number
   /** Layers placed by hand on the stock sheets; missing in older saves. */
   placements?: SheetPlacement[]
+  /** The bottom layer is never cut; objects stand on it. */
+  solidBase?: boolean
 }
+
 
 const UNSAVED = 'incase.project' // the unnamed project (before named projects: everything)
 const NAMED = 'incase.project:' // + name
@@ -110,6 +117,28 @@ const storageKey = (name: string) => (name ? NAMED + name : UNSAVED)
 export const uid = () => crypto.randomUUID()
 
 export const itemHeight = (it: Item) => (it.shape === 'lying' ? it.d : it.shape === 'sphere' ? Math.min(it.d, it.d2) : it.h)
+export const itemBottom = (it: Item) => it.z + itemHeight(it)
+
+/** The item's group (itself if ungrouped). */
+export const groupOf = (p: Project, it: Item) => (it.group ? p.items.filter(o => o.group === it.group) : [it])
+
+/** Items split into what moves together: each group, every ungrouped item alone; in order of appearance. */
+export function units(items: Item[]): Item[][] {
+  const byGroup = new Map<string, Item[]>()
+  return items.flatMap(it => {
+    if (!it.group) return [[it]]
+    const unit = byGroup.get(it.group)
+    if (unit) return (unit.push(it), [])
+    byGroup.set(it.group, [it])
+    return [byGroup.get(it.group)!]
+  })
+}
+
+/** The member reaching deepest; a group sinks onto a layer boundary by it. */
+export const deepest = (unit: Item[]) => unit.reduce((a, b) => (itemBottom(b) > itemBottom(a) ? b : a))
+
+/** Depths the stack should put layer boundaries at: one per group or ungrouped item. */
+export const stackBottoms = (p: Project) => units(p.items).map(u => itemBottom(deepest(u)))
 
 /** Footprint bounding box in the item's local frame, before the fit is applied: centre (x, y) and size (l, w). */
 export function itemBox(it: Item) {
@@ -221,40 +250,75 @@ export const LAYER_COST = 10
  * the gap under the case rim plus how far objects reaching below the stack stick out (they stand on the case floor),
  * where one more layer is worth it only if it saves more than `layerCost` mm of these in total, then materials earlier
  * in the list.
- * Between the boundaries objects rest on, preferred materials go on top.
+ * Materials with a `position` go only there, one of them always (unless that cannot fit: then `positions` is dropped);
+ * with `solidBase`, objects stand on the bottom layer instead of sinking into it.
+ * Between the boundaries objects rest on, preferred materials go on top; the top and bottom layer stay put.
  */
-export function suggestStack(materials: Material[], depth: number, bottoms: number[], layerCost = LAYER_COST): string[] {
-  const units = materials.map(m => Math.round(m.thickness * 10))
+export function suggestStack(materials: Material[], depth: number, bottoms: number[], layerCost = LAYER_COST, solidBase = false, positions = true): string[] {
+  const th = materials.map(m => Math.round(m.thickness * 10))
   const target = Math.max(0, Math.round(depth * 10))
   const bs = bottoms.map(b => Math.round(b * 10)).filter(b => b > 0)
+  const at = (where?: 'top' | 'bottom') => [...th.keys()].filter(i => th[i] > 0 && (positions ? materials[i].position === where : !where))
+  const tops = at('top'), bottomMats = at('bottom'), middle = at()
   // best[s]: cheapest stack summing to s; cost = [layers × layerCost + sinking, preference], its last layer spans from..s
   const best: ({ cost: number[]; from: number; mat: number } | undefined)[] = [{ cost: [0, 0], from: 0, mat: -1 }]
   for (let s = 1; s <= target; s++) {
-    units.forEach((u, i) => {
-      const prev = u > 0 && u <= s ? best[s - u] : undefined
-      if (!prev) return
+    for (const i of [...middle, ...tops]) {
+      const u = th[i]
+      // the first layer is a top material if there is one, the others are middle ones
+      const prev = u <= s && (s === u && tops.length ? tops : middle).includes(i) ? best[s - u] : undefined
+      if (!prev) continue
       const sink = bs.reduce((sum, b) => (b > s - u && b <= s ? sum + s - b : sum), 0)
       const cost = [prev.cost[0] + layerCost * 10 + sink, prev.cost[1] + i]
       if (!best[s] || cheaper(cost, best[s]!.cost)) best[s] = { cost, from: s - u, mat: i }
-    })
+    }
   }
-  const thinnest = Math.min(...units.filter(u => u > 0))
-  let end = 0, endCost = [Infinity]
+  const thinnest = Math.min(...th.filter(u => u > 0))
+  // the stack above s, plus a bottom layer `j` (-1: none): a bottom material, or any middle one as the solid base
+  let end = 0, base = -1, endCost = [Infinity]
+  const lasts = bottomMats.length ? bottomMats : solidBase ? middle : [-1]
   best.forEach((b, s) => {
-    if (!b || target - s >= thinnest) return
-    const stickOut = bs.reduce((sum, x) => sum + Math.max(0, x - s), 0)
-    const cost = [b.cost[0] + target - s + stickOut, b.cost[1], -s]
-    if (cheaper(cost, endCost)) [end, endCost] = [s, cost]
+    for (const j of lasts) {
+      const total = s + (j < 0 ? 0 : th[j])
+      if (!b || (tops.length && s === 0) || total > target || target - total >= thinnest) continue
+      // objects below s sink into the bottom layer, or stand on it if it is solid
+      const floor = j < 0 || solidBase ? s : total
+      const below = bs.reduce((sum, x) => sum + (x > s && x <= floor ? floor - x : Math.max(0, x - floor)), 0)
+      const cost = [b.cost[0] + (j < 0 ? 0 : layerCost * 10) + target - total + below, b.cost[1] + Math.max(j, 0), -total]
+      if (cheaper(cost, endCost)) [end, base, endCost] = [s, j, cost]
+    }
   })
-  const layers: { a: number; i: number }[] = []
-  for (let s = end; s > 0; s = best[s]!.from) layers.unshift({ a: best[s]!.from, i: best[s]!.mat })
+  if (endCost[0] === Infinity && positions) return suggestStack(materials, depth, bottoms, layerCost, solidBase, false)
+  const layers: { a: number; i: number; keep: boolean }[] = []
+  for (let s = end; s > 0; s = best[s]!.from) {
+    const { from, mat } = best[s]!
+    layers.unshift({ a: from, i: mat, keep: tops.includes(mat) })
+  }
+  if (base >= 0) layers.push({ a: end, i: base, keep: true })
   const runs: number[][] = [[]]
-  for (const { a, i } of layers) {
-    runs.at(-1)!.push(i)
-    if (bs.some(b => b > a && b <= a + units[i])) runs.push([])
+  for (const { a, i, keep } of layers) {
+    if (keep) runs.push([i], [])
+    else {
+      runs.at(-1)!.push(i)
+      if (bs.some(b => b > a && b <= a + th[i])) runs.push([])
+    }
   }
   return runs.flatMap(r => r.sort((x, y) => x - y)).map(i => materials[i].id)
 }
+
+/** True if the stack has a top and a bottom material wherever the materials ask for one, and none elsewhere. */
+export function positionsKept(p: Project) {
+  const where = (id: string) => p.materials.find(m => m.id === id)?.position
+  const asked = (pos: 'top' | 'bottom') => p.materials.some(m => m.position === pos)
+  return p.stack.every((id, i) => {
+    const pos = where(id), want = i === 0 && asked('top') ? 'top' : i === p.stack.length - 1 && asked('bottom') ? 'bottom' : undefined
+    return pos === want
+  })
+}
+
+/** The auto stack for `p`. */
+export const autoStack = (p: Project) =>
+  suggestStack(p.materials, p.box.depth, stackBottoms(p), p.layerCost, p.solidBase)
 
 function defaultProject(): Project {
   const materials: Material[] = [
@@ -268,7 +332,7 @@ function defaultProject(): Project {
     { ...defaultItem('lying', 'Lens', 0, 0), x: 4, y: -33.2, rot: 90, z: 5.5, l: 65, d: 60 },
     { ...defaultItem('cylinder', 'Additional lens', 0, 0), x: -97.2, y: -35.9, h: 65, d: 60, d2: 60, fit: -1 },
   ]
-  const stack = suggestStack(materials, 80, items.map(it => it.z + itemHeight(it)))
+  const stack = suggestStack(materials, 80, items.map(itemBottom))
   for (const it of items) it.notchDepth = materials.find(m => m.id === stack[0])!.thickness
   return {
     box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, minWall: 5, lidDepth: 20, unknown: [] },
@@ -304,7 +368,7 @@ export const parseProject = (json: string): Project => normalize(JSON.parse(json
 /** Empty project (no objects) with the case and the shared settings of `from`. */
 export function newProject(from: Project): Project {
   const p = { ...defaultProject(), items: [], box: structuredClone(from.box), ...sharedPart(from) }
-  return { ...p, stack: suggestStack(p.materials, p.box.depth, []) }
+  return { ...p, stack: autoStack(p) }
 }
 
 /** Names of the saved projects, sorted. */

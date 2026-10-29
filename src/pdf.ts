@@ -34,7 +34,7 @@ function draw(doc: jsPDF, cs: Contour[], dx: number, dy: number) {
       }
       at = to
     }
-    doc.close()
+    if (!c.open) doc.close()
   }
   doc.stroke()
 }

@@ -1,5 +1,5 @@
-import { areaD, areaPathsD, booleanOpDWithPolyTree, ClipType, differenceD, EndType, FillRule, getBoundsPathsD, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, unionD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
-import { itemHeight, perimeterPoint, type CaseDims, type Item, type Material, type Project } from './model'
+import { areaD, areaPathsD, booleanOpDWithPolyTree, ClipperD, ClipType, differenceD, EndType, FillRule, getBoundsPathsD, inflatePathsD, intersectD, JoinType, PolyTreeD, polyTreeToPathsD, unionD, type PathD, type PathsD, type PointD } from 'clipper2-ts'
+import { deepest, groupOf, itemBottom, itemHeight, perimeterPoint, type CaseDims, type Item, type Material, type Project } from './model'
 
 const TOL = 0.02 // max chord deviation of arcs in mm
 const EPS = 1e-6
@@ -131,19 +131,19 @@ export const stackTotal = (p: Project) => p.stack.reduce((sum, id) => sum + (p.m
 export const offset = (paths: PathsD, delta: number) => inflatePathsD(paths, delta, JoinType.Round, EndType.Polygon)
 
 /**
- * Where an item really sits: its cut ends on a layer boundary, so it sinks onto the layer below its cut.
+ * Where an item really sits: its cut ends on a layer boundary, so it sinks onto the layer below its cut; a group sinks
+ * as one, by its deepest member. Objects reaching below the stack stand on the case floor, or on the solid base.
  * Returns its top depth (from the foam top) and the index of the layer it rests on (-1 = the case floor).
- * Items reaching below the stack stand on the case floor.
  */
 export function resting(p: Project, it: Item): { z: number; layer: number } {
-  const h = itemHeight(it)
-  const thickness = p.stack.map(id => p.materials.find(m => m.id === id)?.thickness ?? 0)
   let b = 0
-  for (let i = 0; i < thickness.length; i++) {
-    b += thickness[i]
-    if (b >= it.z + h - EPS) return { z: b - h, layer: i + 1 < thickness.length ? i + 1 : -1 }
-  }
-  return { z: b - h, layer: -1 }
+  const bounds = p.stack.map(id => (b += p.materials.find(m => m.id === id)?.thickness ?? 0))
+  const open = p.solidBase ? bounds.slice(0, -1) : bounds // boundaries an object may sink to
+  const low = itemBottom(deepest(groupOf(p, it)))
+  const lands = open.find(b => b >= low - EPS) ?? open.at(-1) ?? 0
+  const z = it.z + lands - low
+  const below = bounds.findIndex(b => b >= z + itemHeight(it) - EPS) + 1
+  return { z, layer: below > 0 && below < bounds.length ? below : -1 }
 }
 
 export interface Layer {
@@ -157,7 +157,7 @@ export interface Layer {
   outlines: PathsD
   /** Object names at the centres of their outlines; on the top layer and where the objects rest. */
   names: { x: number; y: number; text: string }[]
-  /** Where the layer above is cut for the objects resting on this one. */
+  /** Open lines: where the layer above is cut, on the foam of this one (not along its own cut lines). */
   footprints: PathsD
 }
 
@@ -165,30 +165,41 @@ export interface Layer {
 export const objectOutline = (it: Item, a: number, z = it.z) =>
   unionD(itemCuts({ ...it, fit: 0, notches: [] }, a, z), FillRule.NonZero)
 
-export type Align = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom' | 'distributeX' | 'distributeY' | 'first'
+export type Align = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom' | 'distributeX' | 'distributeY' | 'first' | 'zTop' | 'zCenter' | 'zBottom' | 'zFirst'
 
 /**
- * Moves items by the bounding boxes of their outlines (without fit and notches): edges or centres onto those of all
- * the boxes together, equal gaps between them keeping the outermost edges (distribute), or every centre onto the
- * first item's.
+ * Moves units (groups or single items, see `units`) by the bounding boxes of their outlines (without fit and notches):
+ * edges or centres onto those of all the boxes together, equal gaps between them keeping the outermost edges
+ * (distribute), or every centre onto the first unit's. The z variants do the same with the depths (top = highest).
  */
-export function alignItems(items: Item[], how: Align) {
-  const boxes = items.map(it => getBoundsPathsD(objectOutline(it, -Infinity)))
+export function alignItems(units: Item[][], how: Align) {
+  const boxes = units.map(u => getBoundsPathsD(u.flatMap(it => objectOutline(it, -Infinity))))
+  const depths = units.map(u => ({ top: Math.min(...u.map(it => it.z)), bottom: Math.max(...u.map(itemBottom)) }))
   const all = {
     left: Math.min(...boxes.map(b => b.left)), right: Math.max(...boxes.map(b => b.right)),
     top: Math.min(...boxes.map(b => b.top)), bottom: Math.max(...boxes.map(b => b.bottom)),
   }
   const mid = (b: typeof all) => ({ x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 })
-  const shift = (i: number, dx: number, dy: number) => Object.assign(items[i], { x: items[i].x + dx, y: items[i].y + dy })
+  const shift = (i: number, dx: number, dy: number, dz = 0) => units[i].forEach(it => Object.assign(it, { x: it.x + dx, y: it.y + dy, z: it.z + dz }))
   if (how === 'distributeX' || how === 'distributeY') {
     const x = how === 'distributeX'
     const lo = (b: typeof all) => (x ? b.left : b.top), size = (b: typeof all) => (x ? b.right - b.left : b.bottom - b.top)
-    const gap = (size(all) - boxes.reduce((sum, b) => sum + size(b), 0)) / (items.length - 1)
+    const gap = (size(all) - boxes.reduce((sum, b) => sum + size(b), 0)) / (units.length - 1)
     let at = lo(all)
     for (const i of boxes.map((_, i) => i).sort((i, j) => lo(boxes[i]) - lo(boxes[j]))) {
       shift(i, x ? at - lo(boxes[i]) : 0, x ? 0 : at - lo(boxes[i]))
       at += size(boxes[i]) + gap
     }
+    return
+  }
+  if (how.startsWith('z')) {
+    const top = Math.min(...depths.map(d => d.top)), bottom = Math.max(...depths.map(d => d.bottom))
+    const zMid = (d: { top: number; bottom: number }) => (d.top + d.bottom) / 2
+    depths.forEach((d, i) => shift(i, 0, 0,
+      how === 'zTop' ? top - d.top
+      : how === 'zBottom' ? bottom - d.bottom
+      : how === 'zCenter' ? (top + bottom) / 2 - zMid(d)
+      : zMid(depths[0]) - zMid(d)))
     return
   }
   const c = mid(all), first = mid(boxes[0])
@@ -237,15 +248,26 @@ function joinCuts(perItem: PathsD[]): PathsD {
   return unionD([...union, ...fillets], FillRule.NonZero)
 }
 
+const FOOTPRINT_GAP = 0.05 // mm; lines of the layer above closer than this to this layer's cut lines are left out
+
+/** The parts of the open `lines` inside `region`. */
+function linesInside(lines: PathsD, region: PathsD): PathsD {
+  const c = new ClipperD()
+  c.addOpenSubjectPaths(lines)
+  c.addClipPaths(region)
+  const open: PathsD = []
+  c.execute(ClipType.Intersection, FillRule.NonZero, [], open)
+  return open
+}
+
 export function computeLayers(p: Project): Layer[] {
   const all = slabs(p), rest = p.items.map(it => resting(p, it))
-  return all.map(({ material, a, b, outline }, index) => {
+  const layers = all.map(({ material, a, b, outline }, index) => {
     const tree = new PolyTreeD()
     if (outline) {
       const cuts = joinCuts(p.items.map((it, i) => itemCuts(it, a, rest[i].z)))
       booleanOpDWithPolyTree(ClipType.Difference, [outline], cuts, tree, FillRule.NonZero, 3)
     }
-    const footprints = unionD(p.items.flatMap((it, i) => (rest[i].layer === index ? itemCuts(it, all[index - 1].a, rest[i].z) : [])), FillRule.NonZero)
     // where an object rests, its outline in the slab above
     const own = p.items.map((it, i) => objectOutline(it, rest[i].layer === index ? all[index - 1].a : a, rest[i].z))
     const outlines = unionD(own.flat(), FillRule.NonZero)
@@ -255,8 +277,12 @@ export function computeLayers(p: Project): Layer[] {
       const g = getBoundsPathsD(own[i])
       return [{ x: (g.left + g.right) / 2, y: (g.top + g.bottom) / 2, text: it.name }]
     })
-    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines, names, footprints }
+    return { index, material, a, b, tree, paths: polyTreeToPathsD(tree), outlines, names, footprints: [] as PathsD }
   })
+  for (const [i, l] of layers.entries()) {
+    if (i) l.footprints = linesInside(layers[i - 1].paths.map(path => [...path, path[0]]), offset(l.paths, -FOOTPRINT_GAP))
+  }
+  return layers
 }
 
 export const AREA_TOL = 0.01 // mm², ignores rounding slivers

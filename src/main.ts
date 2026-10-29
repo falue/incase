@@ -1,11 +1,12 @@
 import './style.css'
 import type { ArrangeResult } from './arrange'
-import { alignItems, AREA_TOL, computeLayers, resting, wallConflicts, wallViolations, stackTotal, type Align, type Layer } from './geometry'
+import { getBoundsPathsD } from 'clipper2-ts'
+import { alignItems, AREA_TOL, computeLayers, objectOutline, resting, wallConflicts, wallViolations, stackTotal, type Align, type Layer } from './geometry'
 import { exportDxf, exportSvg } from './export'
 import { History } from './history'
 import { exportPdf, PAPERS } from './pdf'
 import { PRESETS, saveUserPresets, userPresets, type Preset } from './presets'
-import { boxCorners, copyProject, currentName, defaultItem, deleteProject, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, normalize, renameProject, resetUnsaved, saveProject, storedCase, storedProject, unsavedEmpty, setNotchCount, sharedPart, suggestStack, uid, uniqueName, type CaseDims, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
+import { boxCorners, copyProject, currentName, defaultItem, deleteProject, deepest, groupOf, itemHeight, LAYER_COST, loadProject, nameProject, newProject, parseProject, projectNames, normalize, renameProject, resetUnsaved, saveProject, storedCase, storedProject, unsavedEmpty, setNotchCount, sharedPart, autoStack, positionsKept, uid, uniqueName, units, type CaseDims, type CaseKey, type Dim, type Item, type Material, type Project, type SheetPlacement, type Shape } from './model'
 import { planSheets, type Piece, type Sheet } from './sheets'
 import { View2D } from './view2d'
 import { View3D } from './view3d'
@@ -70,6 +71,15 @@ const ICONS = {
   chain: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   chainBroken: '<path d="M15 9l3-3a3 3 0 0 0-4.2-4.2l-3 3M9 15l-3 3a3 3 0 0 0 4.2 4.2l3-3M4 8h3M8 4v3M20 16h-3M16 20v-3"/>',
   save: '<path d="M5 3h11l4 4v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M8 3v5h7V3M8 21v-7h8v7"/>',
+  zTop: '<path d="M3 4h18"/><rect x="5" y="7" width="6" height="6" rx="1"/><rect x="13" y="7" width="6" height="12" rx="1" stroke-dasharray="2 2"/>',
+  zCenter: '<path d="M3 12h18"/><rect x="5" y="9" width="6" height="6" rx="1"/><rect x="13" y="5" width="6" height="14" rx="1" stroke-dasharray="2 2"/>',
+  zBottom: '<path d="M3 20h18"/><rect x="5" y="11" width="6" height="6" rx="1"/><rect x="13" y="5" width="6" height="12" rx="1" stroke-dasharray="2 2"/>',
+  zFirst: '<rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="8" width="8" height="8" rx="1" stroke-dasharray="2 2"/><path d="M3 12h18"/>',
+  group: '<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/><rect x="6" y="6" width="7" height="7" rx="1"/><rect x="11" y="11" width="7" height="7" rx="1"/>',
+  ungroup: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/><path d="M14 4l6 6M20 4l-6 6"/>',
+  posAny: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  posTop: '<rect x="4" y="4" width="16" height="5" rx="1"/><path d="M4 14h16M4 19h16" stroke-dasharray="2 2"/>',
+  posBottom: '<path d="M4 5h16M4 10h16" stroke-dasharray="2 2"/><rect x="4" y="15" width="16" height="5" rx="1"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3z"/>',
 }
 const icon = (name: keyof typeof ICONS) => `<svg viewBox="0 0 24 24">${ICONS[name]}</svg>`
@@ -231,7 +241,7 @@ const renderers: Record<Section, () => void> = { case: renderCase, materials: re
 
 /** Call after every model change; rebuilds the listed panels (structural changes), the rest is synced in place. */
 function changed(...rebuild: Section[]) {
-  if (project.stackAuto) project.stack = suggestStack(project.materials, project.box.depth, project.items.map(it => it.z + itemHeight(it)), project.layerCost)
+  if (project.stackAuto) project.stack = autoStack(project)
   for (const s of new Set(rebuild)) renderers[s]()
   renderStack()
   renderPresetName()
@@ -413,6 +423,13 @@ function presetPicker() {
   }
 }
 
+/** Material positions in the auto stack: icon and help. */
+const POSITIONS = {
+  any: ['posAny', 'Auto stack: used anywhere'],
+  top: ['posTop', 'Auto stack: always the topmost layer, nowhere else'],
+  bottom: ['posBottom', 'Auto stack: always the bottom layer, nowhere else'],
+} as const
+
 function renderMaterials() {
   const ms = project.materials
   const nextColor = () => PALETTE.find(c => c !== project.labelColor && c !== project.outlineColor && !ms.some(m => m.color === c)) ?? '#808080'
@@ -423,6 +440,13 @@ function renderMaterials() {
         withTip(color(() => m.color, v => (m.color = v), 'export'), 'Cut line colour of this material in the exported SVG'),
         withTip(Object.assign(text(() => m.name, v => (m.name = v), 'export'), { className: 'grow' }), 'Material name, shown on the layer labels'),
         prop(unit(), size(() => m.thickness, v => (m.thickness = v)), 'Sheet thickness', 'short'),
+        h('button', {
+          className: 'icon' + (m.position ? ' on' : ''), innerHTML: icon(POSITIONS[m.position ?? 'any'][0]), tip: `${POSITIONS[m.position ?? 'any'][1]} · click to change`,
+          onclick: () => {
+            m.position = m.position === undefined ? 'top' : m.position === 'top' ? 'bottom' : undefined
+            changed('materials')
+          },
+        }),
         iconButton('✕', 'Also removes its layers from the stack', () => {
           ms.splice(i, 1)
           project.stack = project.stack.filter(id => id !== m.id)
@@ -502,29 +526,29 @@ function renderExport() {
       ),
     ),
     fold('Include info', 'Engravings and reference lines added to the sheets and the exports', true,
-      h('h4', { textContent: 'Engravings' }),
+      h('div', { className: 'row' },
+        h('h4', { className: 'grow', textContent: 'Engravings' }),
+        withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Engraving line colour: layer numbers (except the topmost), object names on the top layer, footprints and sheet titles; must differ from all material colours'),
+      ),
       h('div', { className: 'props' },
         checkbox('Layer numbers', 'Layer numbers on the sheets and in the exports, with the sheet titles; the topmost one in the reference colour', project.showLabels, on => (project.showLabels = on)),
         checkbox('Object names', 'Each object\'s name centred in it as text: on the top layer (move it to where it should be engraved) and, in the reference colour, on the layer it rests on', project.showNames, on => (project.showNames = on)),
-        checkbox('Footprints', 'On the layer an object rests on: where the layer above is cut for it (fit and notches included)', project.showFootprints, on => (project.showFootprints = on)),
+        checkbox('Footprints', 'On every layer: where the layer above is cut (fit and notches included), except along its own cut lines', project.showFootprints, on => (project.showFootprints = on)),
       ),
       h('div', { className: 'row' },
-        prop('Engraving line colour', color(() => project.labelColor, v => (project.labelColor = v)), 'Layer numbers (except the topmost), object names on the top layer, footprints and sheet titles; must differ from all material colours'),
+        h('h4', { className: 'grow', textContent: 'References' }),
+        withTip(color(() => project.outlineColor, v => (project.outlineColor = v)), 'Reference line colour: object and sheet outlines, the topmost layer number and the object names where they rest (also in the top view); must differ from all material colours'),
       ),
-      h('h4', { textContent: 'References' }),
       h('div', { className: 'props' },
         checkbox('Sheet outline', 'Sheet frames in the exports', project.showFrames, on => (project.showFrames = on)),
         checkbox('Objects', 'Object outlines on every layer cut for them and where they rest, for orientation only', project.showOutlines, on => (project.showOutlines = on)),
-      ),
-      h('div', { className: 'row' },
-        prop('Reference line colour', color(() => project.outlineColor, v => (project.outlineColor = v)), 'Object and sheet outlines, the topmost layer number and the object names where they rest (also in the top view); must differ from all material colours'),
       ),
     ),
     fold('Sheet sizes', 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the spacing apart. Empty = no limit', false, ...project.materials.flatMap(sheetSizes)),
     h('h4', { textContent: 'Export sheets' }),
     h('div', { className: 'row' },
-      h('button', { className: 'primary', textContent: 'SVG', tip: 'All layers on the stock sheets of their material, as one SVG in mm', onclick: () => download('incase.svg', exportSvg(project, computeLayers(project), true), 'image/svg+xml') }),
-      h('button', { className: 'primary', textContent: 'DXF', tip: 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', onclick: () => download('incase.dxf', exportDxf(project, computeLayers(project), true), 'application/dxf') }),
+      h('button', { className: 'primary', textContent: 'SVG', tip: 'All layers on the stock sheets of their material, as one SVG in mm', onclick: () => download(fileName('svg'), exportSvg(project, computeLayers(project), true), 'image/svg+xml') }),
+      h('button', { className: 'primary', textContent: 'DXF', tip: 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', onclick: () => download(fileName('dxf'), exportDxf(project, computeLayers(project), true), 'application/dxf') }),
     ),
   )
 }
@@ -569,6 +593,7 @@ function renderStack(starMm = 5) {
       }
       return select
     }
+    const solid = project.solidBase && i === stack.length - 1
     // clicking a row shows that layer in the top view
     const showLayer = (e: MouseEvent) => {
       if ((e.target as Element).closest('select, button, .grip')) return
@@ -581,7 +606,7 @@ function renderStack(starMm = 5) {
       h('span', { className: 'swatch', style: `background:${m.color}` }),
       h('span', { className: 'idx', textContent: String(i + 1), tip: 'Layer number, counted from the top (as on the export labels)' }),
       project.stackAuto ? h('span', { className: 'grow', textContent: label(m) }) : picker(),
-      h('span', { className: 'hint range', textContent: `${fmtLen(a)}–${fmtLen(z)}`, tip: 'Depth range of this layer, measured from the foam top' }),
+      h('span', { className: 'hint range', textContent: `${solid ? 'uncut · ' : ''}${fmtLen(a)}–${fmtLen(z)}`, tip: 'Depth range of this layer, measured from the foam top' }),
       ...(project.stackAuto ? [] : [iconButton('✕', '', manual(() => stack.splice(i, 1)))]),
     )
   })
@@ -590,7 +615,7 @@ function renderStack(starMm = 5) {
     textContent: `Inner height ${fmtLen(box.depth)} · stack ${fmtLen(z)} ${unit()}`,
   })
   // how far each object's cut misses a layer boundary, and the stack the case depth
-  const off = project.items.map(it => ({ name: it.name, d: Math.abs(resting(project, it).z - it.z) })).filter(o => o.d > 0.01)
+  const off = units(project.items).map(deepest).map(it => ({ name: it.name, d: Math.abs(resting(project, it).z - it.z) })).filter(o => o.d > 0.01)
   const worst = off.reduce((w, o) => (o.d > w.d ? o : w), { name: '', d: 0 })
   const short = box.depth - z
   const total = off.reduce((sum, o) => sum + o.d, 0)
@@ -607,26 +632,61 @@ function renderStack(starMm = 5) {
   )
   $('stack').replaceChildren(
     ...rows,
-    ...(project.stackAuto ? [] : [button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id)))]),
-  )
-}
-
-function renderItems() {
-  if (!project.items.length) return $('items').replaceChildren(h('span', { className: 'hint', textContent: 'Add objects with the tools on the left (B, C, L, S).' }))
-  $('items').replaceChildren(
-    ...project.items.map(it =>
-      h('button', { className: selection.includes(it.id) ? 'selected' : '', onclick: (e: MouseEvent) => select(it.id, e.shiftKey) },
-        h('span', { innerHTML: icon(it.shape) }),
-        h('span', { className: 'grow', textContent: it.name }),
-        h('span', { className: 'hint', textContent: SHAPES[it.shape] }),
-      ),
+    h('div', { className: 'row' },
+      checkbox('Solid bottom layer', 'The bottom layer is never cut: objects stand on it instead of sinking into it', !!project.solidBase, on => (project.solidBase = on)),
+      h('span', { className: 'grow' }),
+      ...(project.stackAuto ? [] : [button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id)))]),
     ),
   )
 }
 
-/** Selects only `id` (null: nothing); `add` (Shift-click) adds it to the selection or removes it. */
-function select(id: string | null, add = false) {
-  selection = !id ? [] : !add ? [id] : selection.includes(id) ? selection.filter(s => s !== id) : [...selection, id]
+/** Objects list; a group is a row of its own (selects all of it) above its members (each selects just that one). */
+function renderItems() {
+  if (!project.items.length) return $('items').replaceChildren(h('span', { className: 'hint', textContent: 'Add objects with the tools on the left (B, C, L, S).' }))
+  const row = (it: Item, member: boolean) =>
+    h('button', { className: (selection.includes(it.id) ? 'selected' : '') + (member ? ' member' : ''), onclick: (e: MouseEvent) => select(it.id, e.shiftKey, true) },
+      h('span', { innerHTML: icon(it.shape) }),
+      h('span', { className: 'grow', textContent: it.name }),
+      h('span', { className: 'hint', textContent: SHAPES[it.shape] }),
+    )
+  $('items').replaceChildren(
+    ...units(project.items).flatMap(u => u.length < 2 ? [row(u[0], false)] : [
+      h('button', { className: u.every(it => selection.includes(it.id)) ? 'selected' : '', tip: 'Selects the whole group; pick a member below to edit it alone', onclick: (e: MouseEvent) => select(u[0].id, e.shiftKey) },
+        h('span', { innerHTML: icon('group') }),
+        h('span', { className: 'grow', textContent: 'Group' }),
+        h('span', { className: 'hint', textContent: `${u.length} objects` }),
+      ),
+      ...u.map(it => row(it, true)),
+    ]),
+  )
+}
+
+/**
+ * Selects only `id` and its group (null: nothing; `exact`: without its group); `add` (Shift-click) adds them to the
+ * selection or removes them.
+ */
+function select(id: string | null, add = false, exact = false) {
+  const it = project.items.find(o => o.id === id)
+  const ids = !it ? [] : exact ? [it.id] : groupOf(project, it).map(o => o.id)
+  selection = !add ? ids : ids.every(i => selection.includes(i)) ? selection.filter(i => !ids.includes(i)) : [...selection, ...ids.filter(i => !selection.includes(i))]
+  changed('items', 'selection')
+}
+
+/** The selected items form exactly one whole group. */
+const selectedGroup = () => {
+  const items = selectedItems()
+  return items.length > 1 && units(items).length === 1 && groupOf(project, items[0]).length === items.length ? items : null
+}
+
+/** Puts the selected items into one new group (merging groups they were in). */
+function group() {
+  const id = uid()
+  for (const it of selectedItems()) it.group = id
+  changed('items', 'selection')
+}
+
+function ungroup() {
+  for (const it of selectedItems()) delete it.group
   changed('items', 'selection')
 }
 
@@ -671,9 +731,11 @@ function createPolygon(points: { x: number; y: number }[]) {
   select(it.id)
 }
 
-/** Copies the items 10 mm down right and selects the copies. */
+/** Copies the items 10 mm down right and selects the copies; copied groups become new groups. */
 function duplicate(items: Item[]) {
-  const copies = items.map(it => ({ ...structuredClone(it), id: uid(), name: `${it.name} copy`, x: it.x + 10, y: it.y + 10 }))
+  const groups = new Map<string, string>()
+  const copyGroup = (g?: string) => g && (groups.get(g) ?? groups.set(g, uid()).get(g))
+  const copies = items.map(it => ({ ...structuredClone(it), id: uid(), name: `${it.name} copy`, x: it.x + 10, y: it.y + 10, group: copyGroup(it.group) }))
   project.items.push(...copies)
   selection = copies.map(c => c.id)
   changed('items', 'selection')
@@ -856,7 +918,7 @@ function pdfDialog() {
     const size = paper === 'Custom' ? (custom.map(el => el.valueAsNumber) as [number, number]) : PAPERS[paper]
     if (!(size[0] >= 50 && size[1] >= 50)) return
     closeDialog()
-    download('incase.pdf', exportPdf(project, computeLayers(project), size))
+    download(fileName('pdf'), exportPdf(project, computeLayers(project), size))
   } })
   const choice = h('div', { className: 'seg' })
   segmented(choice, [...Object.keys(PAPERS), 'Custom'].map((name): [string, string, string] => [name, name, '']), () => paper, v => {
@@ -889,10 +951,11 @@ function remove(items: Item[]) {
 }
 
 function renderSelection() {
-  const it = selected()
+  const it = selected(), members = selectedGroup()
   $('selection-section').hidden = !selection.length
+  if (members) return renderGroup(members)
   if (selection.length > 1) {
-    return $('selection').replaceChildren(h('p', { className: 'hint', textContent: `${selection.length} objects selected: drag, nudge, align, duplicate or delete them together; select one to edit it.` }))
+    return $('selection').replaceChildren(h('p', { className: 'hint', textContent: `${selection.length} objects selected: drag, nudge, align, duplicate or delete them together, ⌘G groups them; select one to edit it.` }))
   }
   if (!it) return $('selection').replaceChildren()
 
@@ -933,6 +996,34 @@ function renderSelection() {
   )
 }
 
+/** Position, depth and rotation of a whole group; it turns about its first member's centre. */
+function renderGroup(members: Item[]) {
+  const [pivot] = members
+  const centre = () => {
+    const b = getBoundsPathsD(members.flatMap(it => objectOutline(it, -Infinity)))
+    return { x: (b.left + b.right) / 2, y: (b.top + b.bottom) / 2 }
+  }
+  const shift = (dx: number, dy: number, dz: number) => members.forEach(it => Object.assign(it, { x: it.x + dx, y: it.y + dy, z: it.z + dz }))
+  const turn = (deg: number) => {
+    const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a)
+    for (const it of members) {
+      const dx = it.x - pivot.x, dy = it.y - pivot.y
+      Object.assign(it, { x: pivot.x + dx * c - dy * s, y: pivot.y + dx * s + dy * c, rot: it.rot + deg })
+    }
+  }
+  const top = () => Math.min(...members.map(it => it.z))
+  $('selection').replaceChildren(
+    h('div', { className: 'props' },
+      prop('X', len(() => centre().x, v => shift(v - centre().x, 0, 0)), "Centre of the group's outlines, right of the case centre"),
+      prop('Y', len(() => centre().y, v => shift(0, v - centre().y, 0)), "Centre of the group's outlines, below the case centre (top view)"),
+      prop('Z from top', len(top, v => shift(0, 0, v - top())), 'How far below the foam top the highest member sits; the group sinks as one, by its deepest member'),
+      prop('Rotation °', num(() => pivot.rot, v => turn(v - pivot.rot)), `Rotation in the top view, clockwise, about the centre of ${pivot.name}`),
+    ),
+    h('div', { className: 'row' }, button('Ungroup', 'Members move on their own again (⇧⌘G)', ungroup)),
+    hint(`${members.length} objects that move together. Pick one in the Objects list to edit its size or its offset within the group.`),
+  )
+}
+
 const LID_MARGIN = 2 // mm; closer than this to the closed lid counts as touching
 
 /** Warning if the item's top reaches the closed lid (case depth + lid depth above the floor), or comes very close. */
@@ -953,6 +1044,7 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
   const colors = project.materials.map(m => m.color.toLowerCase())
   const warnings = [
     diff > 0.01 && `Stack is ${fmtLen(diff)} ${unit()} taller than the case`,
+    project.stackAuto && !positionsKept(project) && 'The auto stack cannot keep the top / bottom materials where they belong',
     ...project.items.map(it => it.z + itemHeight(it) > total + 0.01 && `${it.name} reaches below the stack`),
     ...project.items.map(lidWarning),
     ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
@@ -967,6 +1059,9 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
   el.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
   el.dataset.tip = warnings.join(' · ')
 }
+
+/** Export file name: the open project's name, else "incase". */
+const fileName = (ext: string) => `${currentName() || 'incase'}.${ext}`
 
 function download(name: string, content: string | Blob, type = '') {
   const href = URL.createObjectURL(content instanceof Blob ? content : new Blob([content], { type }))
@@ -1194,8 +1289,8 @@ const plainExport = $('plain-export') as HTMLDetailsElement
 const plainItem = (textContent: string, tip: string, action: () => void) =>
   h('button', { textContent, tip, onclick: () => ((plainExport.open = false), action()) })
 $('plain-export-menu').replaceChildren(
-  plainItem('SVG', 'All layers side by side as one SVG in mm', () => download('incase.svg', exportSvg(project, computeLayers(project), false), 'image/svg+xml')),
-  plainItem('DXF', 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', () => download('incase.dxf', exportDxf(project, computeLayers(project), false), 'application/dxf')),
+  plainItem('SVG', 'All layers side by side as one SVG in mm', () => download(fileName('svg'), exportSvg(project, computeLayers(project), false), 'image/svg+xml')),
+  plainItem('DXF', 'Same as the SVG, as a DXF (R12, mm) with one layer per foam layer', () => download(fileName('dxf'), exportDxf(project, computeLayers(project), false), 'application/dxf')),
   plainItem('PDF', 'Printable 1:1 templates to cut by hand; large layers are split onto several sheets', pdfDialog),
   plainItem('JSON', 'The project incl. materials as a file (or all projects in one), to keep or share; Load opens it again', exportJson),
 )
@@ -1334,6 +1429,8 @@ renderCamera = segmented($('camera'), [['ortho', 'Ortho', 'Orthographic: no pers
 const tool = (name: keyof typeof ICONS, tip: string, onclick: () => void) => h('button', { className: 'tool', tip, innerHTML: icon(name), onclick })
 const duplicateTool = tool('duplicate', 'Duplicate (⌘/Ctrl+D)', () => duplicate(selectedItems()))
 const deleteTool = tool('delete', 'Delete (Del)', () => remove(selectedItems()))
+// ungroups a selected group, groups two or more objects or groups
+const groupTool = tool('group', '', () => (selectedGroup() ? ungroup() : group()))
 
 // align: one tool with a menu beside it; needs 2+ selected objects (distribute 3+)
 const alignMenu = h('details', { className: 'dropdown flyout' })
@@ -1347,14 +1444,19 @@ const ALIGNS: [Align, string, string][] = [
   ['distributeX', 'Distribute X', 'Equal gaps left to right; the outermost stay (3+ objects)'],
   ['distributeY', 'Distribute Y', 'Equal gaps top to bottom; the outermost stay (3+ objects)'],
   ['first', 'Center on first', 'Centres onto the centre of the first selected object'],
+  ['zTop', 'Top Z', 'Tops onto the highest top (Z from top)'],
+  ['zCenter', 'Center Z', 'Depth centres onto the middle of the selection, top to bottom'],
+  ['zBottom', 'Bottom Z', 'Bottoms onto the deepest bottom'],
+  ['zFirst', 'Center Z on first', 'Depth centres onto the depth centre of the first selected object'],
 ]
+// groups align as one
 const renderAlignMenu = () => alignMenu.replaceChildren(
-  h('summary', { className: 'tool', innerHTML: icon('align'), tip: 'Align the selected objects (by their outlines, without fit)' }),
+  h('summary', { className: 'tool', innerHTML: icon('align'), tip: 'Align the selected objects (by their outlines, without fit); groups move as one' }),
   h('div', { className: 'menu' }, ...ALIGNS.map(([how, label, tip]) => h('button', {
-    innerHTML: `${icon(how)}<span>${label}</span>`, tip, disabled: selection.length < (how.startsWith('distribute') ? 3 : 2),
+    innerHTML: `${icon(how)}<span>${label}</span>`, tip, disabled: units(selectedItems()).length < (how.startsWith('distribute') ? 3 : 2),
     onclick: () => {
       alignMenu.open = false
-      alignItems(selectedItems(), how)
+      alignItems(units(selectedItems()), how)
       changed()
     },
   }))),
@@ -1373,6 +1475,7 @@ $('toolbar').replaceChildren(
   h('hr'),
   duplicateTool,
   deleteTool,
+  groupTool,
   undoTool,
   redoTool,
 )
@@ -1381,6 +1484,10 @@ $('fit-3d').replaceWith(Object.assign(tool('fit', 'Fit the case into the 3D view
 function updateChrome() {
   const it = selected()
   duplicateTool.disabled = deleteTool.disabled = !selection.length
+  const grouped = !!selectedGroup()
+  groupTool.disabled = !grouped && units(selectedItems()).length < 2
+  groupTool.innerHTML = icon(grouped ? 'ungroup' : 'group')
+  groupTool.dataset.tip = grouped ? 'Ungroup (⇧⌘G / Ctrl+Shift+G)' : 'Group: move, rotate and sink together (⌘/Ctrl+G)'
   undoTool.disabled = !history.canUndo
   redoTool.disabled = !history.canRedo
   $('hint').textContent = exporting
@@ -1388,7 +1495,7 @@ function updateChrome() {
     : view2d.isDrawing
     ? 'Click to add corners · click the first one, double-click or Enter to finish · Backspace removes the last · Esc cancels'
     : selection.length > 1
-    ? 'Drag one to move them all · Shift-click adds or removes · align them with the align tool · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
+    ? 'Drag one to move them all · Shift-click adds or removes · align them with the align tool · ⌘G group, ⇧⌘G ungroup · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
     : it
     ? 'Drag to move · Shift-click selects more · Ctrl snaps · drag handle to rotate (Ctrl 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
     : 'B C L S add · Tab next object under the click · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
@@ -1498,6 +1605,8 @@ addEventListener('keydown', e => {
   }
   else if (items.length && e.key === 'Escape') select(null)
   else if (items.length && (e.metaKey || e.ctrlKey) && key === 'd') duplicate(items)
+  else if (mod && key === 'g' && e.shiftKey) ungroup()
+  else if (mod && key === 'g' && selection.length > 1) group()
   else return
   e.preventDefault()
 })
