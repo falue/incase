@@ -193,9 +193,11 @@ const cheaper = (a: number[], b: number[]) => {
 export const LAYER_COST = 10
 
 /**
- * Stack for a case `depth` deep, never exceeding it. Ranked by: filling the depth, then fewest layers plus least
- * sinking of the objects (their `bottoms`, from the foam top, should land on layer boundaries), where one more layer
- * is worth it only if it saves more than `layerCost` mm of sinking in total, then materials earlier in the list.
+ * Stack for a case `depth` deep, never exceeding it and leaving no gap a sheet would still fit in. Ranked by: fewest
+ * layers plus least sinking of the objects (their `bottoms`, from the foam top, should land on layer boundaries) plus
+ * the gap under the case rim plus how far objects reaching below the stack stick out (they stand on the case floor),
+ * where one more layer is worth it only if it saves more than `layerCost` mm of these in total, then materials earlier
+ * in the list.
  * Between the boundaries objects rest on, preferred materials go on top.
  */
 export function suggestStack(materials: Material[], depth: number, bottoms: number[], layerCost = LAYER_COST): string[] {
@@ -213,11 +215,12 @@ export function suggestStack(materials: Material[], depth: number, bottoms: numb
       if (!best[s] || cheaper(cost, best[s]!.cost)) best[s] = { cost, from: s - u, mat: i }
     })
   }
-  // objects reaching below the stack stand on the case floor, raised by the gap; worse than anything else
+  const thinnest = Math.min(...units.filter(u => u > 0))
   let end = 0, endCost = [Infinity]
   best.forEach((b, s) => {
-    if (!b) return
-    const cost = [bs.reduce((sum, x) => sum + Math.max(0, x - s), 0), -s, ...b.cost]
+    if (!b || target - s >= thinnest) return
+    const stickOut = bs.reduce((sum, x) => sum + Math.max(0, x - s), 0)
+    const cost = [b.cost[0] + target - s + stickOut, b.cost[1], -s]
     if (cheaper(cost, endCost)) [end, endCost] = [s, cost]
   })
   const layers: { a: number; i: number }[] = []
