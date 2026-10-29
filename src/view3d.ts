@@ -5,7 +5,7 @@ import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
 import { booleanOpDWithPolyTree, ClipType, FillRule, PolyTreeD, type PolyPathD } from 'clipper2-ts'
 import { caseSection, objectOutline, resting, roundedRect, stackTotal, type Layer } from './geometry'
-import { itemHeight, type CaseDims, type Item, type Project } from './model'
+import { deepest, groupOf, itemHeight, type CaseDims, type Item, type Project } from './model'
 
 // Plan (x, y) maps to three (x, z); y = 0 is the case top, the case floor is at y = -depth.
 
@@ -354,10 +354,10 @@ export class View3D {
       if (layer.index === current) edges.dispose()
     }
     this.ghosts = p.items.flatMap(it => {
-      // the item stands on (and explodes with) the layer below its cut, or on the case floor
-      const { z, layer } = resting(p, it)
-      const h = itemHeight(it)
-      const bottom = layer >= 0 ? -(foamTop + layers[layer].a) + shift(layer) : -(foamTop + z + h)
+      // the item stands on (and explodes with) the layer below its cut, or on the case floor; a group moves with its deepest member
+      const { z } = resting(p, it), h = itemHeight(it)
+      const anchor = deepest(groupOf(p, it)), rest = resting(p, anchor), low = rest.z + itemHeight(anchor)
+      const bottom = (rest.layer >= 0 ? -(foamTop + layers[rest.layer].a) + shift(rest.layer) : -(foamTop + low)) + low - (z + h)
       const color = selection.includes(it.id) ? this.accent : OBJECT
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
       if (excess <= 0) return [ghost(it, bottom, color, planes)]
