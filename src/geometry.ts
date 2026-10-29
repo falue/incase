@@ -32,6 +32,28 @@ export function roundedRect(l: number, w: number, r: number, perCorner?: number)
 
 const translate = (path: PathD, dx: number, dy: number) => path.map(p => ({ x: p.x + dx, y: p.y + dy }))
 
+// seven-segment strokes per digit (x, y pairs) in a 0.6 × 1 cell, y down from the top (-1) to the baseline (0)
+const DIGITS = [
+  [[0, 0, 0.6, 0, 0.6, -1, 0, -1, 0, 0]],
+  [[0.1, -0.8, 0.3, -1, 0.3, 0]],
+  [[0, -1, 0.6, -1, 0.6, -0.5, 0, -0.5, 0, 0, 0.6, 0]],
+  [[0, -1, 0.6, -1, 0.6, 0, 0, 0], [0, -0.5, 0.6, -0.5]],
+  [[0, -1, 0, -0.5, 0.6, -0.5], [0.6, -1, 0.6, 0]],
+  [[0.6, -1, 0, -1, 0, -0.5, 0.6, -0.5, 0.6, 0, 0, 0]],
+  [[0.6, -1, 0, -1, 0, 0, 0.6, 0, 0.6, -0.5, 0, -0.5]],
+  [[0, -1, 0.6, -1, 0.6, 0]],
+  [[0, 0, 0.6, 0, 0.6, -1, 0, -1, 0, 0], [0, -0.5, 0.6, -0.5]],
+  [[0.6, -0.5, 0, -0.5, 0, -1, 0.6, -1, 0.6, 0, 0, 0]],
+]
+const DIGIT = { advance: 0.9, stroke: 0.15 } // per size
+
+/** A whole number as closed outlines (strokes widened, for cutting or engraving), `size` tall, its baseline from (0, 0). */
+export function numberOutline(n: number, size: number): PathsD {
+  const strokes = [...String(n)].flatMap((ch, i) => DIGITS[Number(ch)].map(line =>
+    Array.from({ length: line.length / 2 }, (_, k) => ({ x: (line[2 * k] + i * DIGIT.advance) * size, y: line[2 * k + 1] * size }))))
+  return inflatePathsD(strokes, (DIGIT.stroke * size) / 2, JoinType.Round, EndType.Round)
+}
+
 /** Local item frame → plan: rotate by item.rot (degrees, clockwise on screen since y points down), then move. */
 export function place(path: PathD, it: Item): PathD {
   const a = (it.rot * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a)

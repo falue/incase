@@ -56,12 +56,12 @@ export class SheetView {
     const { sheets, width, height } = planSheets(p, layers, { spare: true, head })
     this.sheets = sheets
     this.svg.setAttribute('viewBox', `${-PAD} ${-PAD} ${width + 2 * PAD} ${height + 2 * PAD}`)
-    const label = visibleOn(this.svg, p.labelColor)
+    const label = visibleOn(this.svg, p.labelColor), outline = visibleOn(this.svg, p.outlineColor)
     const parts = sheets.flatMap((s, i) => {
       const fill = s.pieces.reduce((sum, pc) => sum + (pc.box.right - pc.box.left) * (pc.box.bottom - pc.box.top), 0) / (s.w * s.h)
       const title = s.spare ? `Empty ${s.w} × ${s.h} sheet: drag pieces here` : `${sheetTitle(sheets, s)}${s.unlimited ? '' : ` · ${Math.round(fill * 100)} % used`}`
       return [
-        `<rect class="sheet${s.spare ? ' spare' : ''}${s.unlimited ? ' unlimited' : ''}${s.oversize ? ' oversize' : ''}${s.missing ? ' missing' : ''}" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}"/>`,
+        `<rect style="--frame:${outline}" class="sheet${s.spare ? ' spare' : ''}${s.unlimited ? ' unlimited' : ''}${s.oversize ? ' oversize' : ''}${s.missing ? ' missing' : ''}" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}"/>`,
         `<text class="title" x="${s.x}" y="${s.y - head * 0.3}" font-size="${head * 0.6}">${esc(title)}</text>`,
         ...s.pieces.map((pc, j) => {
           const { cut, outlines, label: l } = pieceShapes(p, s, pc)
@@ -71,8 +71,8 @@ export class SheetView {
           const cls = `piece${pc.conflict || s.oversize ? ' conflict' : ''}${fixed ? ' fixed' : ''}${pc.layer.index === this.selected ? ' selected' : ''}`
           return `<g class="${cls}" data-sheet="${i}" data-piece="${j}" data-tip="${esc(`Layer ${pc.layer.index + 1} · ${tip}`)}">`
             + `<path class="cut" stroke="${color}" fill="${color}" d="${pathData(cut)}"/>`
-            + `<path class="outline" stroke="${label}" d="${pathData(outlines)}"/>`
-            + (l ? `<text class="label" fill="${label}" x="${l.x}" y="${l.y}" font-size="${l.size}"${l.rot ? ` transform="rotate(${l.rot} ${l.x} ${l.y})"` : ''}>${esc(l.text)}</text>` : '')
+            + (p.showOutlines ? `<path class="outline" stroke="${outline}" d="${pathData(outlines)}"/>` : '')
+            + (p.showLabels ? `<path class="label" stroke="${label}" d="${pathData(l)}"/>` : '')
             + '</g>'
         }),
       ]

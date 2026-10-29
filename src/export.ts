@@ -26,7 +26,7 @@ export interface Piece {
 /**
  * All layers side by side, each with its label below.
  * Kerf: the pieces grow by half the kerf (outer edges out, holes in), so they come out at nominal size.
- * Every object also gets its own outline (for engraving or orientation), drawn in the label colour below the cut lines.
+ * Every object also gets its own outline (for engraving or orientation), drawn in the outline colour below the cut lines.
  */
 export function layout(p: Project, layers: Layer[]) {
   const L = Math.max(p.box.topL, p.box.bottomL) + p.kerf
@@ -46,14 +46,22 @@ export function layout(p: Project, layers: Layer[]) {
   return { width: layers.length * (L + GAP) - GAP + 2 * MARGIN, height: W + FONT + 4 + 2 * MARGIN, pieces, font: FONT, stroke: STROKE }
 }
 
-type Label = { x: number; y: number; size: number; rot: number; text: string }
-
 /**
  * Everything to draw, in mm (y down). On sheets: the stock sheets (frames and titles) and on them every layer's cut
- * lines (kerf applied), object outlines and label; sheet frames and object outlines in the label colour.
+ * lines (kerf applied), object outlines and label; sheet frames in the outline colour.
  * Otherwise all layers side by side (see layout), each label below its layer.
+ * Labels and titles, and the object outlines, are left out when switched off.
  */
 function drawing(p: Project, layers: Layer[], onSheets: boolean) {
+  const all = drawn(p, layers, onSheets)
+  return {
+    ...all,
+    titles: p.showLabels ? all.titles : [],
+    pieces: all.pieces.map(pc => ({ ...pc, outlines: p.showOutlines ? pc.outlines : [], label: p.showLabels ? pc.label : [] })),
+  }
+}
+
+function drawn(p: Project, layers: Layer[], onSheets: boolean) {
   if (!onSheets) {
     const { width, height, pieces } = layout(p, layers)
     return {
@@ -61,7 +69,7 @@ function drawing(p: Project, layers: Layer[], onSheets: boolean) {
       height,
       frames: [] as Contour[],
       titles: pieces.map(pc => ({ ...pc.labelAt, text: pc.label })),
-      pieces: pieces.map((pc, i) => ({ layer: layers[i], cut: pc.cut, outlines: pc.outlines, label: null as Label | null })),
+      pieces: pieces.map((pc, i) => ({ layer: layers[i], cut: pc.cut, outlines: pc.outlines, label: [] as Contour[] })),
     }
   }
   const { sheets, width, height } = planSheets(p, layers)
@@ -74,23 +82,22 @@ function drawing(p: Project, layers: Layer[], onSheets: boolean) {
     titles: sheets.map(s => ({ x: s.x, y: s.y - TITLE_RAISE, text: sheetTitle(sheets, s) })),
     pieces: sheets.flatMap(s => s.pieces.map(pc => {
       const { cut, outlines, label } = pieceShapes(p, s, pc)
-      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), label: label as Label | null }
+      return { layer: pc.layer, cut: contours(cut), outlines: contours(outlines), label: contours(label) }
     })),
   }
 }
 
 const esc = (s: string) => s.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`)
 
-/** One SVG in mm (see drawing), cut lines in the material colours; labels of turned pieces are turned with them. */
+/** One SVG in mm (see drawing), cut lines in the material colours; piece labels are outlines, turned with their piece. */
 export function exportSvg(p: Project, layers: Layer[], onSheets: boolean): string {
   const { width, height, frames, titles, pieces } = drawing(p, layers, onSheets)
-  const labels = pieces.flatMap(({ label: l }) => (l ? [{ ...l, transform: l.rot ? ` transform="rotate(${l.rot} ${l.x} ${l.y})"` : '' }] : []))
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}mm" height="${height}mm" viewBox="0 0 ${width} ${height}">
-<g id="sheets" fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}">
+<g id="sheets" fill="none" stroke="${p.outlineColor}" stroke-width="${STROKE}">
 ${frames.length ? `<path d="${svgPath(frames)}"/>` : ''}
 </g>
-<g id="outlines" fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}">
+<g id="outlines" fill="none" stroke="${p.outlineColor}" stroke-width="${STROKE}">
 ${pieces.filter(pc => pc.outlines.length).map(pc => `<path d="${svgPath(pc.outlines)}"/>`).join('\n')}
 </g>
 <g id="cut" fill="none" stroke-width="${STROKE}">
@@ -98,7 +105,7 @@ ${pieces.map(pc => `<path stroke="${pc.layer.material.color}" d="${svgPath(pc.cu
 </g>
 <g id="labels" fill="${p.labelColor}" font-family="sans-serif" font-size="${FONT}">
 ${titles.map(t => `<text x="${t.x}" y="${t.y}">${esc(t.text)}</text>`).join('\n')}
-${labels.map(l => `<text x="${l.x}" y="${l.y}" font-size="${l.size}"${l.transform}>${esc(l.text)}</text>`).join('\n')}
+${pieces.filter(pc => pc.label.length).map(pc => `<path fill="none" stroke="${p.labelColor}" stroke-width="${STROKE}" d="${svgPath(pc.label)}"/>`).join('\n')}
 </g>
 </svg>
 `
@@ -146,15 +153,14 @@ export function exportDxf(p: Project, layers: Layer[], onSheets: boolean): strin
     }
   }
   const label = aci(p.labelColor)
-  // rotation in degrees counter-clockwise (y up): a piece turned clockwise on screen is at 270
-  const text = (x: number, y: number, size: number, s: string, rot = 0) =>
-    out.push(0, 'TEXT', 8, 'LABELS', 62, label, 10, n(x), 20, n(height - y), 40, size, 1, s.replace(/·/g, '-'), 50, (360 - rot) % 360)
-  polylines(frames, 'SHEETS', label)
-  for (const t of titles) text(t.x, t.y, FONT, t.text)
+  const text = (x: number, y: number, s: string) =>
+    out.push(0, 'TEXT', 8, 'LABELS', 62, label, 10, n(x), 20, n(height - y), 40, FONT, 1, s.replace(/·/g, '-'))
+  polylines(frames, 'SHEETS', aci(p.outlineColor))
+  for (const t of titles) text(t.x, t.y, t.text)
   for (const pc of pieces) {
-    polylines(pc.outlines, 'OUTLINES', label)
+    polylines(pc.outlines, 'OUTLINES', aci(p.outlineColor))
     polylines(pc.cut, `CUT_${pc.layer.index + 1}_${pc.layer.material.name.replace(/[^\w-]+/g, '_')}`, aci(pc.layer.material.color))
-    if (pc.label) text(pc.label.x, pc.label.y, pc.label.size, pc.label.text, pc.label.rot)
+    polylines(pc.label, 'LABELS', label)
   }
   out.push(0, 'ENDSEC', 0, 'EOF')
   return out.join('\n') + '\n'

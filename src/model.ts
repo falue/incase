@@ -75,7 +75,12 @@ export interface Project {
   /** Auto stack: mm of sinking one more layer must save (see suggestStack); missing in older saves. */
   layerCost?: number
   items: Item[]
+  /** Layer labels (and sheet titles) in the sheet view and the exports. */
+  showLabels: boolean
   labelColor: string
+  /** Outlines of the objects themselves in the sheet view and the exports. */
+  showOutlines: boolean
+  outlineColor: string
   /** Width of the cut (laser, mill, knife) in mm; the export offsets cut lines by half of it. */
   kerf: number
   /** Layers placed by hand on the stock sheets; missing in older saves. */
@@ -249,7 +254,10 @@ function defaultProject(): Project {
     stackAuto: true,
     layerCost: LAYER_COST,
     items: [camera],
+    showLabels: true,
     labelColor: '#ff00ff',
+    showOutlines: true,
+    outlineColor: '#ffff00',
     kerf: 0,
   }
 }
@@ -257,6 +265,10 @@ function defaultProject(): Project {
 export function parseProject(json: string): Project {
   const p: Project = JSON.parse(json)
   for (const it of p.items) it.d2 ??= it.d // saves from before oval cylinders and spheres
+  // saves from before labels and outlines could be switched off: both on, outlines in the label colour
+  p.showLabels ??= true
+  p.showOutlines ??= true
+  p.outlineColor ??= p.labelColor
   return p
 }
 

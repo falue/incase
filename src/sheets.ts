@@ -1,11 +1,10 @@
 import { areaD, areaPathsD, FillRule, getBoundsPathsD, intersectD, simplifyPathsD, type PathsD } from 'clipper2-ts'
 import { freePositions } from './arrange'
-import { AREA_TOL, offset, roundedRect, type Layer } from './geometry'
+import { AREA_TOL, numberOutline, offset, roundedRect, type Layer } from './geometry'
 import type { Material, Project, SheetPlacement } from './model'
 
 export const FONT = 5 // mm, sheet titles and piece labels
 const LABEL_SIZES = [FONT, 3] // mm; the smaller one is tried where the larger does not fit
-const CHAR = 0.6 // approx. character width per font size
 const LABEL_MARGIN = 1 // mm of foam around a label
 const SIMPLIFY = 0.3 // mm; keeps the label search fast, covered by LABEL_MARGIN
 const MARGIN = 5 // mm around the drawing
@@ -229,41 +228,40 @@ export function sheetTitle(sheets: Sheet[], s: Sheet) {
   return `${name} · ${thickness} mm · ${size} · sheet ${all.indexOf(s) + 1}/${all.length}${s.oversize ? ' · larger than every sheet size' : s.missing ? ' · not in stock' : ''}`
 }
 
-const labelText = (l: Layer) => `${l.index + 1} · ${l.material.name} · ${l.material.thickness} mm`
+// layers are rebuilt on every change, so a label is placed once per layer
+const labels = new WeakMap<Layer, PathsD>()
 
-// layers are rebuilt on every change, so a spot is found once per layer
-const spots = new WeakMap<Layer, { x: number; y: number; size: number } | null>()
-
-/** Baseline start of the layer's label inside its foam (layer frame), nearest its bottom-left corner; null if it fits nowhere. */
-function labelSpot(l: Layer) {
-  if (spots.has(l)) return spots.get(l)!
+/**
+ * The layer's label (its number, as outlines) inside its foam (layer frame), nearest its bottom-left corner;
+ * empty if it fits nowhere.
+ */
+function layerLabel(l: Layer) {
+  if (labels.has(l)) return labels.get(l)!
   const { outer, holes } = split(l)
   const bin = simplifyPathsD(outer, SIMPLIFY), obstacles = simplifyPathsD(holes, SIMPLIFY)
-  const b = getBoundsPathsD(l.paths), text = labelText(l)
-  let spot = null
+  const b = getBoundsPathsD(l.paths)
+  let label: PathsD = []
   for (const size of LABEL_SIZES) {
-    // text box from the baseline start: ascenders 0.8, descenders 0.25 of the size
-    const w = text.length * size * CHAR + 2 * LABEL_MARGIN, h = 1.05 * size + 2 * LABEL_MARGIN
-    const box = roundedRect(w, h, 0)!.map(q => ({ x: q.x + w / 2 - LABEL_MARGIN, y: q.y - h / 2 + 0.25 * size + LABEL_MARGIN }))
+    const digits = numberOutline(l.index + 1, size), g = getBoundsPathsD(digits)
+    const w = g.right - g.left + 2 * LABEL_MARGIN, h = g.bottom - g.top + 2 * LABEL_MARGIN
+    const box = roundedRect(w, h, 0)!.map(q => ({ x: q.x + (g.left + g.right) / 2, y: q.y + (g.top + g.bottom) / 2 }))
     const free = freePositions([box], bin, obstacles).flat()
     if (free.length) {
       const at = free.reduce((a, q) => (Math.hypot(q.x - b.left, q.y - b.bottom) < Math.hypot(a.x - b.left, a.y - b.bottom) ? q : a))
-      spot = { ...at, size }
+      label = turn(digits, 0, at.x, at.y)
       break
     }
   }
-  spots.set(l, spot)
-  return spot
+  labels.set(l, label)
+  return label
 }
 
 /** Cut lines (kerf applied), object outlines and label of a piece, in drawing mm. */
 export function pieceShapes(p: Project, s: Sheet, pc: Piece) {
   const ox = s.x + pc.x, oy = s.y + pc.y
-  const spot = labelSpot(pc.layer)
-  const at = spot && turn([[spot]], pc.rot, ox, oy)[0][0]
   return {
     cut: turn(p.kerf > 0 ? offset(pc.layer.paths, p.kerf / 2) : pc.layer.paths, pc.rot, ox, oy),
     outlines: turn(pc.layer.outlines, pc.rot, ox, oy),
-    label: at && { ...at, size: spot.size, rot: pc.rot, text: labelText(pc.layer) },
+    label: turn(layerLabel(pc.layer), pc.rot, ox, oy),
   }
 }

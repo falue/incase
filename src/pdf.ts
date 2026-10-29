@@ -39,13 +39,14 @@ function draw(doc: jsPDF, cs: Contour[], dx: number, dy: number) {
   doc.stroke()
 }
 
-/** Cut lines, object outlines and label of a piece, shifted by (dx, dy). */
+/** Cut lines, object outlines and label of a piece (those two if switched on), shifted by (dx, dy). */
 function drawPiece(doc: jsPDF, p: Project, pc: Piece, dx: number, dy: number, font: number) {
   doc.setLineWidth(LINE)
-  doc.setDrawColor(p.labelColor)
-  if (pc.outlines.length) draw(doc, pc.outlines, dx, dy)
+  doc.setDrawColor(p.outlineColor)
+  if (p.showOutlines && pc.outlines.length) draw(doc, pc.outlines, dx, dy)
   doc.setDrawColor(pc.color)
   draw(doc, pc.cut, dx, dy)
+  if (!p.showLabels) return
   doc.setTextColor(p.labelColor).setFontSize(font * PT_PER_MM)
   doc.text(pc.label.replace(/·/g, '-'), pc.labelAt.x + dx, pc.labelAt.y + dy)
 }

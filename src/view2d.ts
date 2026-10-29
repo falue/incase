@@ -266,7 +266,7 @@ export class View2D {
       parts.push(`<path data-id="${it.id}" data-tip="${esc(tip)}" class="item${it === this.selected ? ' selected' : ''}" d="${pathData(footprints[i])}"/>`)
     })
     // outlines under the cut lines, so with fit 0 the cut line stays visible
-    for (const d of outlines) parts.push(`<path class="object-outline" stroke="${p.labelColor}" d="${d}"/>`)
+    for (const d of outlines) parts.push(`<path class="object-outline" stroke="${p.outlineColor}" d="${d}"/>`)
     if (layer) parts.push(`<path class="layer" stroke="${visibleOn(this.svg, layer.material.color)}" d="${layerPaths}"/>`)
     for (const it of items) parts.push(`<text class="name" x="${it.x}" y="${it.y}">${esc(it.name)}</text>`)
     if (this.selected) {

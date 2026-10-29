@@ -377,7 +377,7 @@ function presetPicker() {
 
 function renderMaterials() {
   const ms = project.materials
-  const nextColor = () => PALETTE.find(c => c !== project.labelColor && !ms.some(m => m.color === c)) ?? '#808080'
+  const nextColor = () => PALETTE.find(c => c !== project.labelColor && c !== project.outlineColor && !ms.some(m => m.color === c)) ?? '#808080'
   $('materials').replaceChildren(
     ...ms.map((m, i) =>
       h('div', { className: 'row sortable' },
@@ -452,8 +452,15 @@ function sheetSizes(m: Material) {
 /** Export settings and buttons. */
 function renderExport() {
   $('export').replaceChildren(
+    h('div', { className: 'row' },
+      checkbox('Labels', 'Layer labels on the sheets and in the exports', project.showLabels, on => (project.showLabels = on)),
+      withTip(color(() => project.labelColor, v => (project.labelColor = v)), 'Colour of the labels; must differ from all material colours'),
+    ),
+    h('div', { className: 'row' },
+      checkbox('Object outlines', 'Outlines of the objects themselves (for engraving or orientation) on the sheets and in the exports', project.showOutlines, on => (project.showOutlines = on)),
+      withTip(color(() => project.outlineColor, v => (project.outlineColor = v)), 'Colour of the object outlines and sheet frames, also in the top view; must differ from all material colours'),
+    ),
     h('div', { className: 'props' },
-      prop('Label colour', color(() => project.labelColor, v => (project.labelColor = v)), 'Layer labels and object outlines in the exports; must differ from all material colours'),
       prop('Kerf', size(() => project.kerf, v => (project.kerf = v)), 'Width of the cut (laser beam, mill or knife); exported pieces grow by half of it so they come out at nominal size'),
     ),
     h('h4', { textContent: 'Sheet sizes', tip: 'Sizes of your stock sheets per material (laser, CNC, waterjet …); the layers are laid out on them, keeping the min. wall apart. Empty = no limit' }),
@@ -890,6 +897,7 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
     ...project.items.map(lidWarning),
     ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
     colors.includes(project.labelColor.toLowerCase()) && 'Label colour equals a material colour',
+    colors.includes(project.outlineColor.toLowerCase()) && 'Outline colour equals a material colour',
     new Set(colors).size < colors.length && 'Two materials share a line colour',
     ...[...missing].map(([what, n]) => `${n} more ${what} needed than in stock`),
     ...sheets.filter(s => s.oversize).map(s => `Layer ${s.pieces[0].layer.index + 1} is larger than every ${s.material.name} sheet size`),

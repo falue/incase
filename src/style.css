@@ -337,7 +337,7 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 
 /* sheet view: stock sheets with the pieces on them */
 #view-sheets svg { background: var(--canvas); user-select: none; touch-action: none; }
-#view-sheets .sheet { fill: var(--panel); stroke: var(--ink-muted); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+#view-sheets .sheet { fill: var(--panel); stroke: var(--frame); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 #view-sheets .sheet.unlimited, #view-sheets .sheet.spare { fill: none; stroke-dasharray: 4 3; }
 #view-sheets .sheet.oversize, #view-sheets .sheet.missing { stroke: var(--warn); }
 #view-sheets .title { fill: var(--muted); }
@@ -350,4 +350,4 @@ h4 { margin: 10px 0 4px; font-size: 11px; color: var(--muted); font-weight: 600;
 #view-sheets .piece.selected .cut { stroke-width: 2.5px; fill-opacity: 0.3; }
 #view-sheets .handle-line { stroke: var(--accent); stroke-width: 1px; vector-effect: non-scaling-stroke; pointer-events: none; }
 #view-sheets .handle { fill: var(--canvas); stroke: var(--accent); stroke-width: 2px; vector-effect: non-scaling-stroke; cursor: grab; }
-#view-sheets .label { font-family: sans-serif; }
+#view-sheets .label { fill: none; stroke-width: 1px; vector-effect: non-scaling-stroke; }
