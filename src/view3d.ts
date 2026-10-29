@@ -114,7 +114,7 @@ function lidShell(box: CaseDims) {
 
 export class View3D {
   /** Extra vertical gap between layers, 0–1; at 1 it is half the longer case side; the bottom layer stays on the floor. */
-  explode = 0
+  private explode = 0
   private accent = '#3d8bff' // set by setTheme
   private renderer = new THREE.WebGLRenderer({ antialias: true })
   private scene = new THREE.Scene()
@@ -305,6 +305,28 @@ export class View3D {
     requestAnimationFrame(step)
   }
 
+  /** Sets the explode amount (see `explode`); only moves what is built, so dragging the slider stays fluid. */
+  setExplode(v: number) {
+    this.explode = v
+    this.applyExplode()
+    this.draw()
+  }
+
+  /** Lifts every built object by its steps of the gap, the lid split planes of objects along with them. */
+  private applyExplode() {
+    const gap = this.explode ** 2 * Math.max(this.extent.x, this.extent.y) // squared: fine control at small gaps
+    for (const o of this.content.children) {
+      const { steps, lid, y0 } = o.userData as { steps?: number; lid?: [THREE.Plane, THREE.Plane]; y0: number }
+      if (steps === undefined) continue
+      const dy = y0 + steps * gap - o.position.y
+      o.position.y += dy
+      if (lid) {
+        lid[0].constant += dy
+        lid[1].constant -= dy
+      }
+    }
+  }
+
   /** `current` is the layer shown in the top view; it is highlighted. */
   update(p: Project, layers: Layer[], selection: string[], current: number) {
     this.last = [p, layers, selection, current]
@@ -327,8 +349,10 @@ export class View3D {
     this.content.clear()
 
     const foamTop = p.box.depth - stackTotal(p)
-    const gap = this.explode ** 2 * Math.max(this.extent.x, this.extent.y) // squared: fine control at small gaps
-    const shift = (i: number) => (layers.length - 1 - i) * gap
+    // exploding lifts each object by `steps` gaps (see setExplode); it is built at gap 0
+    const steps = (i: number) => layers.length - 1 - i
+    const lifted = <T extends THREE.Object3D>(o: T, steps: number, lid?: [THREE.Plane, THREE.Plane]) =>
+      (Object.assign(o.userData, { steps, lid, y0: o.position.y }), o)
     this.slabs = []
     for (const layer of layers) {
       let tree = layer.tree
@@ -339,37 +363,39 @@ export class View3D {
       const shapes: THREE.Shape[] = []
       collectShapes(tree, shapes)
       const geo = new THREE.ExtrudeGeometry(shapes, { depth: layer.b - layer.a, bevelEnabled: false })
-      geo.rotateX(Math.PI / 2).translate(0, -(foamTop + layer.a) + shift(layer.index), 0)
+      geo.rotateX(Math.PI / 2).translate(0, -(foamTop + layer.a), 0)
       const color = new THREE.Color(layer.material.color).lerp(new THREE.Color('#fff'), 0.35)
       const edges = new THREE.EdgesGeometry(geo, 30)
-      const slab = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9 }))
+      const slab = lifted(new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.9 })), steps(layer.index))
       slab.userData.layer = layer.index
       this.slabs.push(slab)
       this.content.add(
         slab,
-        layer.index === current
+        lifted(layer.index === current
           ? new LineSegments2(new LineSegmentsGeometry().setPositions(edges.attributes.position.array as Float32Array), new LineMaterial({ color: this.accent, linewidth: CURRENT_LINE }))
-          : new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: '#222' })),
+          : new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: '#222' })), steps(layer.index)),
       )
       if (layer.index === current) edges.dispose()
     }
     this.ghosts = p.items.flatMap(it => {
       // the item stands on (and explodes with) the layer below its cut, or on the case floor; a group moves with its deepest member
       const { z } = resting(p, it), h = itemHeight(it)
-      const anchor = deepest(groupOf(p, it)), rest = resting(p, anchor), low = rest.z + itemHeight(anchor)
-      const bottom = (rest.layer >= 0 ? -(foamTop + layers[rest.layer].a) + shift(rest.layer) : -(foamTop + low)) + low - (z + h)
+      const { layer } = resting(p, deepest(groupOf(p, it)))
+      const bottom = -(foamTop + z + h), n = layer >= 0 ? steps(layer) : 0
       const color = selection.includes(it.id) ? this.accent : OBJECT
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
-      if (excess <= 0) return [ghost(it, bottom, color, planes)]
+      if (excess <= 0) return [lifted(ghost(it, bottom, color, planes), n)]
       // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
       const lid = bottom + h - excess
+      const below = new THREE.Plane(new THREE.Vector3(0, -1, 0), lid), above = new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)
       return [
-        ghost(it, bottom, color, [...planes, new THREE.Plane(new THREE.Vector3(0, -1, 0), lid)]),
-        ghost(it, bottom, LID_HIT, [...planes, new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)]),
+        lifted(ghost(it, bottom, color, [...planes, below]), n, [below, above]),
+        lifted(ghost(it, bottom, LID_HIT, [...planes, above]), n),
       ]
     })
     const shell = [...caseShell(p.box), ...(p.box.lidDepth > 0 ? lidShell(p.box) : [])]
     this.content.add(...this.ghosts, ...shell)
+    this.applyExplode()
 
     if (!this.box) {
       this.box = p.box

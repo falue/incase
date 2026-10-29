@@ -1421,10 +1421,7 @@ layerUp.onclick = () => stepLayer(-1)
 layerDown.onclick = () => stepLayer(1)
 
 const explode = $('explode') as HTMLInputElement
-const setExplode = () => {
-  view3d.explode = explode.valueAsNumber / 100
-  scheduleViews()
-}
+const setExplode = () => view3d.setExplode(explode.valueAsNumber / 100)
 explode.oninput = setExplode
 explode.ondblclick = () => {
   explode.value = '0'
