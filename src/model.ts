@@ -343,10 +343,10 @@ export function flushSave() {
   pending = null
 }
 
-/** Stores `p` under the new name `name` and makes it the open project. */
-export function nameProject(p: Project, name: string) {
+/** Stores `p` under the new name `name`; with `open`, it becomes the open project. */
+export function nameProject(p: Project, name: string, open = true) {
   flushSave()
-  localStorage.setItem(CURRENT, name)
+  if (open) localStorage.setItem(CURRENT, name)
   saveProject(p, name)
   flushSave()
 }

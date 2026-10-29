@@ -1006,11 +1006,17 @@ function openProject(name: string) {
   renderAll()
 }
 
-/** Starts an empty unsaved project; undo brings the previous unsaved one back. */
+/**
+ * Starts an empty unsaved project with the current case. Unsaved work with objects is kept first, as "Untitled"
+ * (" 2" …); otherwise undo brings the previous unsaved one back.
+ */
 function startNew() {
   if (currentName()) openProject('')
+  const keep = project.items.length > 0
+  if (keep) nameProject(project, uniqueName('Untitled'), false)
   project = newProject(project)
   selection = []
+  if (keep) history = new History(JSON.stringify(project))
   renderAll()
 }
 
@@ -1341,14 +1347,14 @@ $('toolbar').replaceChildren(
   ...(Object.entries(SHAPE_KEYS) as [string, Shape][]).map(([key, shape]) => tool(shape, `${SHAPES[shape]} (${key.toUpperCase()})`, () => addItem(shape))),
   tool('polygon', 'Polygon: click its corners in the top view (P)', startPolygon),
   h('hr'),
-  duplicateTool,
   alignMenu,
   tool('even', 'Arrange evenly: largest equal gaps, centred (A)', () => arrange(true)),
   tool('pack', 'Pack tightly at the min. wall, centred (⇧A)', () => arrange(false)),
   h('hr'),
+  duplicateTool,
+  deleteTool,
   undoTool,
   redoTool,
-  Object.assign(deleteTool, { className: 'tool bottom' }),
 )
 $('fit-3d').replaceWith(Object.assign(tool('fit', 'Fit the case into the 3D view (F)', () => view3d.fit()), { id: 'fit-3d' }))
 
