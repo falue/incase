@@ -262,16 +262,21 @@ function defaultProject(): Project {
     { id: uid(), name: 'Foam 10', thickness: 10, color: '#ff0000' },
     { id: uid(), name: 'Foam 5', thickness: 5, color: '#0000ff' },
   ]
-  const stack = suggestStack(materials, 80, [])
-  const camera = { ...defaultItem('box', 'Camera', 0, materials.find(m => m.id === stack[0])!.thickness), l: 130, w: 80, h: 60, r: 8 }
-  setNotchCount(camera, 1)
+  // a camera body with its lens sticking out, notches on both sides, and a spare lens standing upright
+  const items = [
+    { ...defaultItem('box', 'Camera', 0, 0), x: 5, y: 30, l: 130, w: 80, h: 60, r: 8, notches: [{ t: 0.25 }, { t: 0.75 }] },
+    { ...defaultItem('lying', 'Lens', 0, 0), x: 4, y: -33.2, rot: 90, z: 5.5, l: 65, d: 60 },
+    { ...defaultItem('cylinder', 'Additional lens', 0, 0), x: -97.2, y: -35.9, h: 65, d: 60, d2: 60, fit: -1 },
+  ]
+  const stack = suggestStack(materials, 80, items.map(it => it.z + itemHeight(it)))
+  for (const it of items) it.notchDepth = materials.find(m => m.id === stack[0])!.thickness
   return {
     box: { topL: 300, topW: 200, bottomL: 300, bottomW: 200, depth: 80, radius: 10, bottomRadius: 5, minWall: 5, lidDepth: 20, unknown: [] },
     materials,
     stack,
     stackAuto: true,
     layerCost: LAYER_COST,
-    items: [camera],
+    items,
     showLabels: true,
     labelColor: '#ff00ff',
     showNames: true,
