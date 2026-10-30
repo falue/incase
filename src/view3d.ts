@@ -211,7 +211,7 @@ export class View3D {
     canvas.addEventListener('pointermove', e => {
       // a left drag without modifiers rotates: that leaves the side view the cube set up
       const rotating = e.buttons === 1 && !e.shiftKey && !e.ctrlKey && !e.metaKey && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4
-      if (rotating && this.cubeWrap.classList.contains('aligned')) this.leaveSideView()
+      if (rotating) this.leaveSideView()
     })
     canvas.addEventListener('pointerup', e => {
       if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return
@@ -300,20 +300,57 @@ export class View3D {
   }
 
   /** Small cube top right; clicking a face looks at the case from that side. */
-  private viewCube() {
+  private viewCube(dragSpeed = 0.02 /* rad per px */) {
     const half = CUBE / 2
-    const faces: [string, string, THREE.Vector3][] = [
-      ['Front', `translateZ(${half}px)`, new THREE.Vector3(0, 0, 1)],
-      ['Back', `rotateY(180deg) translateZ(${half}px)`, new THREE.Vector3(0, 0, -1)],
-      ['Right', `rotateY(90deg) translateZ(${half}px)`, new THREE.Vector3(1, 0, 0)],
-      ['Left', `rotateY(-90deg) translateZ(${half}px)`, new THREE.Vector3(-1, 0, 0)],
+    const faces: [string, string, THREE.Vector3, number][] = [ // last: brightness, lit from the top front right
+      ['Front', `translateZ(${half}px)`, new THREE.Vector3(0, 0, 1), 0.9],
+      ['Back', `rotateY(180deg) translateZ(${half}px)`, new THREE.Vector3(0, 0, -1), 0.75],
+      ['Right', `rotateY(90deg) translateZ(${half}px)`, new THREE.Vector3(1, 0, 0), 0.82],
+      ['Left', `rotateY(-90deg) translateZ(${half}px)`, new THREE.Vector3(-1, 0, 0), 0.78],
       // straight up/down is a pole for the orbit controls: tilt a hair towards the front
-      ['Top', `rotateX(90deg) translateZ(${half}px)`, new THREE.Vector3(0, 1, 1e-3)],
-      ['Bottom', `rotateX(-90deg) translateZ(${half}px)`, new THREE.Vector3(0, -1, 1e-3)],
+      ['Top', `rotateX(90deg) translateZ(${half}px)`, new THREE.Vector3(0, 1, 1e-3), 1],
+      ['Bottom', `rotateX(-90deg) translateZ(${half}px)`, new THREE.Vector3(0, -1, 1e-3), 0.68],
     ]
     this.cube.className = 'cube'
-    this.cube.append(...faces.map(([label, transform, dir]) =>
-      Object.assign(document.createElement('div'), { className: 'face', textContent: label, onclick: () => this.viewFrom(dir), style: `transform: ${transform}` })))
+    this.cube.append(...faces.map(([label, transform, dir, light]) => {
+      const face = Object.assign(document.createElement('div'), { className: 'face', textContent: label, onclick: () => this.viewFrom(dir), style: `transform: ${transform}; filter: brightness(${light})` })
+      // corner spots look from that cube corner, 45° between the sides; hovering lights the spots of that corner on all three faces
+      const n = dir.clone().round(), up = n.y ? new THREE.Vector3(0, 0, -n.y) : new THREE.Vector3(0, 1, 0), right = up.clone().cross(n)
+      face.append(...([['tl', -1, 1], ['tr', 1, 1], ['bl', -1, -1], ['br', 1, -1]] as const).map(([at, x, y]) => {
+        const corner = n.clone().addScaledVector(right, x).addScaledVector(up, y)
+        const light = (on: boolean) => this.cube.querySelectorAll(`[data-corner="${corner.toArray()}"]`).forEach(c => c.classList.toggle('lit', on))
+        const spot = Object.assign(document.createElement('div'), {
+          className: `corner ${at}`,
+          onclick: (e: MouseEvent) => {
+            e.stopPropagation()
+            this.viewFrom(corner, false)
+          },
+          onpointerenter: () => light(true),
+          onpointerleave: () => light(false),
+        })
+        spot.dataset.corner = `${corner.toArray()}`
+        return spot
+      }))
+      return face
+    }))
+    // dragging the cube orbits the camera; the capture makes the release no click on a face
+    let last = { x: 0, y: 0 }
+    this.cube.onpointerdown = e => (last = { x: e.clientX, y: e.clientY })
+    this.cube.onpointermove = e => {
+      if (e.buttons !== 1) return
+      const dx = e.clientX - last.x, dy = e.clientY - last.y
+      if (!this.cube.hasPointerCapture(e.pointerId)) {
+        if (Math.hypot(dx, dy) <= 4) return
+        this.cube.setPointerCapture(e.pointerId)
+        this.leaveSideView()
+      }
+      last = { x: e.clientX, y: e.clientY }
+      const target = this.controls.target, s = new THREE.Spherical().setFromVector3(this.camera.position.clone().sub(target))
+      s.theta -= dx * dragSpeed
+      s.phi -= dy * dragSpeed
+      this.camera.position.copy(target).add(new THREE.Vector3().setFromSpherical(s.makeSafe()))
+      this.controls.update()
+    }
     // after a side was chosen, arrows turn the view by 90° to the neighbouring side
     const arrows = (['up', 'down', 'left', 'right'] as const).map(side =>
       Object.assign(document.createElement('button'), { className: `turn ${side}`, onclick: () => this.turn(side) }))
@@ -324,13 +361,17 @@ export class View3D {
 
   /** Looks at the neighbouring side: the one to the right / left / above / below on screen. */
   private turn(side: 'up' | 'down' | 'left' | 'right') {
-    const screen = side === 'up' || side === 'down' ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)
-    const v = screen.applyQuaternion(this.camera.quaternion).multiplyScalar(side === 'down' || side === 'left' ? -1 : 1)
-    // snap to the nearest main axis
-    const parts = [v.x, v.y, v.z], i = parts.reduce((best, c, k) => (Math.abs(c) > Math.abs(parts[best]) ? k : best), 0)
-    const dir = new THREE.Vector3().setComponent(i, Math.sign(parts[i]))
-    if (i === 1) dir.addScaledVector(this.camera.position.clone().sub(this.controls.target).normalize(), 1e-3) // off the pole, towards the old view
+    const [x, y] = { up: [0, 1], down: [0, -1], left: [-1, 0], right: [1, 0] }[side]
+    const dir = this.axis(x, y)
+    if (dir.y) dir.addScaledVector(this.camera.position.clone().sub(this.controls.target).normalize(), 1e-3) // off the pole, towards the old view
     this.viewFrom(dir)
+  }
+
+  /** The main axis nearest to the screen direction (`x` right, `y` up). */
+  private axis(x: number, y: number) {
+    const v = new THREE.Vector3(x, y, 0).applyQuaternion(this.camera.quaternion)
+    const parts = [v.x, v.y, v.z], i = parts.reduce((best, c, k) => (Math.abs(c) > Math.abs(parts[best]) ? k : best), 0)
+    return new THREE.Vector3().setComponent(i, Math.sign(parts[i]))
   }
 
   /** The user rotated away from a cube side: hide the arrows, back to perspective if the cube switched to orthographic. */
@@ -342,10 +383,11 @@ export class View3D {
     this.onProjection()
   }
 
-  /** Turns the camera to look from `dir` (same target and distance), switching to orthographic for the view. */
-  private viewFrom(dir: THREE.Vector3) {
-    this.cubeWrap.classList.add('aligned')
-    if (!this.isOrthographic) {
+  /** Turns the camera to look from `dir` (same target and distance); `side`: straight at a cube side, switching to orthographic for it. */
+  private viewFrom(dir: THREE.Vector3, side = true) {
+    if (!side) this.leaveSideView()
+    else this.cubeWrap.classList.add('aligned')
+    if (side && !this.isOrthographic) {
       this.setOrthographic(true)
       this.autoOrtho = true
       this.onProjection()
@@ -388,7 +430,7 @@ export class View3D {
    * Animates the explode: the gap springs after `gap()` (`spring` rad/s, `damping` ratio), so the layers wobble when it stops.
    * Objects are thrown up when their layer slows faster than `gravity` (longer half case sides per s²), which waits `coyote` s after takeoff.
    */
-  private move(spring = 30, damping = 0.25, gravity = 40, coyote = 0.1) {
+  private move(spring = 30, damping = 0.4, gravity = 40, coyote = 0.25) {
     if (this.moving) return
     let last = performance.now()
     const step = (now: number) => {

@@ -665,7 +665,7 @@ function renderStack(starMm = 5) {
   $('stack').replaceChildren(
     ...rows,
     h('div', { className: 'row' },
-      checkbox('Solid bottom layer', 'The bottom layer is never cut: objects stand on it instead of sinking into it', !!project.solidBase, on => (project.solidBase = on)),
+      checkbox('Dont cut bottom layer', 'The bottom layer is never cut: objects stand on it instead of sinking into it', !!project.solidBase, on => (project.solidBase = on)),
       h('span', { className: 'grow' }),
       ...(project.stackAuto ? [] : [button('+ Layer', "Adds it at the bottom, using the last layer's material", manual(() => materials.length && stack.push(stack.at(-1) ?? materials[0].id)))]),
     ),
