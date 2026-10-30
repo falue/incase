@@ -169,6 +169,9 @@ export class View3D {
   private explode = 0
   private landing = 0 // animation frame of the landing bounce
   private landGap = 0 // extra gap while the layers land
+  private shown = 0 // gap as shown: springs after `gap()`, so the layers wobble
+  private gapSpeed = 0
+  private moving = 0 // animation frame of the explode motion
   /** The Z field is being edited: the wanted position of selected objects is shown strong, where they sit faint. */
   private editingZ = false
   private accent = '#3d8bff' // set by setTheme
@@ -367,8 +370,7 @@ export class View3D {
     this.explode = v
     cancelAnimationFrame(this.landing)
     this.landGap = 0
-    this.applyExplode()
-    this.draw()
+    this.move()
     if (landed) this.land()
   }
 
@@ -380,6 +382,44 @@ export class View3D {
 
   private gap() {
     return this.explode ** 2 * Math.max(this.extent.x, this.extent.y) // squared: fine control at small gaps
+  }
+
+  /**
+   * Animates the explode: the gap springs after `gap()` (`spring` rad/s, `damping` ratio), so the layers wobble when it stops.
+   * Objects are thrown up when their layer slows faster than `gravity` (longer half case sides per s²), which waits `coyote` s after takeoff.
+   */
+  private move(spring = 30, damping = 0.25, gravity = 40, coyote = 0.1) {
+    if (this.moving) return
+    let last = performance.now()
+    const step = (now: number) => {
+      const dt = Math.min(0.05, (now - last) / 1000), target = this.gap(), g = gravity * Math.max(this.extent.x, this.extent.y)
+      last = now
+      if (target === 0) this.shown = this.gapSpeed = 0 // land() bounces instead
+      else {
+        this.gapSpeed += (spring ** 2 * (target - this.shown) - 2 * damping * spring * this.gapSpeed) * dt
+        this.shown += this.gapSpeed * dt
+        if (this.shown < 0) [this.shown, this.gapSpeed] = [0, Math.max(0, this.gapSpeed)]
+      }
+      let flying = false
+      for (const o of this.content.children) {
+        const d = o.userData // h: height above its layer, v: own speed, air: time since takeoff
+        if (d.h === undefined) continue
+        const u = d.steps * this.gapSpeed // speed of its layer
+        if (d.h === 0 && d.v - g * dt <= u) {
+          d.v = u
+          d.air = 0
+          continue
+        }
+        d.air += dt
+        if (d.air > coyote) d.v -= g * dt
+        d.h = Math.max(0, d.h + (d.v - u) * dt)
+        flying = true
+      }
+      this.applyExplode()
+      this.draw()
+      this.moving = flying || Math.abs(target - this.shown) > 0.01 || Math.abs(this.gapSpeed) > 0.01 ? requestAnimationFrame(step) : 0
+    }
+    this.moving = requestAnimationFrame(step)
   }
 
   /** The layers hop back up `hops` times, decaying, for `ms`; `height` is the first hop's gap per layer, as a fraction of the longer half case side. */
@@ -397,11 +437,11 @@ export class View3D {
 
   /** Lifts every built object by its steps of the gap, the lid split planes of objects along with them. */
   private applyExplode() {
-    const gap = this.gap() + this.landGap
+    const gap = this.shown + this.landGap
     for (const o of this.content.children) {
-      const { steps, lid, y0 } = o.userData as { steps?: number; lid?: [THREE.Plane, THREE.Plane]; y0: number }
+      const { steps, lid, y0, h = 0 } = o.userData as { steps?: number; lid?: [THREE.Plane, THREE.Plane]; y0: number; h?: number }
       if (steps === undefined) continue
-      const dy = y0 + steps * gap - o.position.y
+      const dy = y0 + steps * gap + h - o.position.y
       o.position.y += dy
       if (lid) {
         lid[0].constant += dy
@@ -436,6 +476,8 @@ export class View3D {
     const steps = (i: number) => layers.length - 1 - i
     const lifted = <T extends THREE.Object3D>(o: T, steps: number, lid?: [THREE.Plane, THREE.Plane]) =>
       (Object.assign(o.userData, { steps, lid, y0: o.position.y }), o)
+    const thrown = <T extends THREE.Object3D>(o: T, steps: number, lid?: [THREE.Plane, THREE.Plane]) =>
+      (Object.assign(lifted(o, steps, lid).userData, { h: 0, v: 0, air: 0 }), o)
     this.slabs = []
     for (const layer of layers) {
       let tree = layer.tree
@@ -470,16 +512,16 @@ export class View3D {
       const bottom = -(foamTop + z + h), n = layer >= 0 ? steps(layer) : 0
       const selected = selection.includes(it.id), color = selected ? this.accent : OBJECT
       const moved = selected && Math.abs(z - it.z) > 0.01
-      if (moved) wanted.push(lifted(ghost(it, -(foamTop + it.z + h), color, planes, this.editingZ ? OPACITY.strong : OPACITY.faint), n))
+      if (moved) wanted.push(thrown(ghost(it, -(foamTop + it.z + h), color, planes, this.editingZ ? OPACITY.strong : OPACITY.faint), n))
       const opacity = moved && this.editingZ ? OPACITY.editing : OPACITY.strong
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
-      if (excess <= 0) return [lifted(ghost(it, bottom, color, planes, opacity), n)]
+      if (excess <= 0) return [thrown(ghost(it, bottom, color, planes, opacity), n)]
       // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
       const lid = bottom + h - excess
       const below = new THREE.Plane(new THREE.Vector3(0, -1, 0), lid), above = new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)
       return [
-        lifted(ghost(it, bottom, color, [...planes, below], opacity), n, [below, above]),
-        lifted(ghost(it, bottom, LID_HIT, [...planes, above], opacity), n),
+        thrown(ghost(it, bottom, color, [...planes, below], opacity), n, [below, above]),
+        thrown(ghost(it, bottom, LID_HIT, [...planes, above], opacity), n),
       ]
     })
     const shell = [...caseShell(p.box), ...(p.box.lidDepth > 0 ? lidShell(p.box) : [])]

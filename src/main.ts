@@ -1448,6 +1448,8 @@ for (const axis of ['x', 'y'] as const) {
     // handles may not cross: the moved one stops at the other
     if (from.valueAsNumber > to.valueAsNumber) moved!.value = (moved === from ? to : from).value
     view3d.setSection(axis, from.valueAsNumber / 1000, to.valueAsNumber / 1000)
+    slider.style.setProperty('--from', String(from.valueAsNumber / 1000))
+    slider.style.setProperty('--to', String(to.valueAsNumber / 1000))
   }
   from.oninput = () => update(from)
   to.oninput = () => update(to)
