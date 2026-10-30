@@ -675,12 +675,16 @@ function renderStack(starMm = 5) {
 /** Objects list; a group is a row of its own (selects all of it) above its members (each selects just that one). */
 function renderItems() {
   if (!project.items.length) return $('items').replaceChildren(h('span', { className: 'hint', textContent: 'Add objects with the tools on the left (B, C, L, S).' }))
-  const row = (it: Item, member: boolean) =>
-    h('button', { className: (selection.includes(it.id) ? 'selected' : '') + (member ? ' member' : ''), onclick: (e: MouseEvent) => select(it.id, e.shiftKey, true) },
+  const row = (it: Item, member: boolean) => {
+    const dot = h('span', { className: 'warn', hidden: true }) // shown by renderWarnings
+    dot.dataset.item = it.id
+    return h('button', { className: (selection.includes(it.id) ? 'selected' : '') + (member ? ' member' : ''), onclick: (e: MouseEvent) => select(it.id, e.shiftKey, true) },
       h('span', { innerHTML: icon(it.shape) }),
       h('span', { className: 'grow', textContent: it.name }),
       h('span', { className: 'hint', textContent: SHAPES[it.shape] }),
+      dot,
     )
+  }
   $('items').replaceChildren(
     ...units(project.items).flatMap(u => u.length < 2 ? [row(u[0], false)] : [
       h('button', { className: u.every(it => selection.includes(it.id)) ? 'selected' : '', tip: 'Selects the whole group; pick a member below to edit it alone', onclick: (e: MouseEvent) => select(u[0].id, e.shiftKey) },
@@ -1029,14 +1033,21 @@ function renderSelection() {
   )
 }
 
-/** "Z from top"; while it is edited (focused or scrubbed), the 3D view shows the wanted position strong. */
+/** "Z from top"; while it is hovered, focused or scrubbed, the 3D view shows the wanted position strong and outlined. */
 function zField(el: HTMLInputElement, tip: string) {
   const field = prop('Z from top', el, tip)
-  el.addEventListener('focus', () => view3d.setEditingZ(true))
-  el.addEventListener('blur', () => view3d.setEditingZ(false))
+  const on = { hover: false, focus: false, scrub: false }
+  const set = (k: keyof typeof on, v: boolean) => {
+    on[k] = v
+    view3d.setEditingZ(on.hover || on.focus || on.scrub)
+  }
+  field.addEventListener('pointerenter', () => set('hover', true))
+  field.addEventListener('pointerleave', () => set('hover', false))
+  el.addEventListener('focus', () => set('focus', true))
+  el.addEventListener('blur', () => set('focus', false))
   field.addEventListener('pointerdown', () => {
-    view3d.setEditingZ(true)
-    addEventListener('pointerup', () => document.activeElement !== el && view3d.setEditingZ(false), { once: true })
+    set('scrub', true)
+    addEventListener('pointerup', () => set('scrub', false), { once: true })
   })
   return field
 }
@@ -1074,8 +1085,8 @@ const LID_MARGIN = 2 // mm; closer than this to the closed lid counts as touchin
 /** Warning if the item's top reaches the closed lid (case depth + lid depth above the floor), or comes very close. */
 function lidWarning(it: Item) {
   const room = project.box.depth - stackTotal(project) + resting(project, it).z + project.box.lidDepth // from its top to the lid
-  if (room < 0) return `${it.name} is ${fmtLen(-room)} ${unit()} too tall for case + lid`
-  return room < LID_MARGIN && `${it.name} almost touches the lid (${fmtLen(room)} ${unit()} left)`
+  if (room < 0) return `${fmtLen(-room)} ${unit()} too tall for case + lid`
+  return room < LID_MARGIN && `Almost touches the lid (${fmtLen(room)} ${unit()} left)`
 }
 
 function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
@@ -1090,9 +1101,6 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
   const warnings = [
     diff > 0.01 && `Stack is ${fmtLen(diff)} ${unit()} taller than the case`,
     project.stackAuto && !slotsKept(project) && 'The auto stack cannot keep every material where it is allowed',
-    ...project.items.map(it => it.z + itemHeight(it) > total + 0.01 && `${it.name} reaches below the stack`),
-    ...project.items.map(lidWarning),
-    ...project.items.map(it => conflicts.has(it.id) && `${it.name} breaks the min. wall`),
     colors.includes(project.labelColor.toLowerCase()) && 'Engraving colour equals a material colour',
     colors.includes(project.outlineColor.toLowerCase()) && 'Reference line colour equals a material colour',
     new Set(colors).size < colors.length && 'Two materials share a line colour',
@@ -1100,6 +1108,17 @@ function renderWarnings(conflicts: Set<string>, sheets: Sheet[]) {
     ...sheets.filter(s => s.oversize).map(s => `Layer ${s.pieces[0].layer.index + 1} is larger than every ${s.material.name} sheet size`),
     ...sheets.flatMap(s => s.pieces.filter(pc => pc.conflict).map(pc => `Layer ${pc.layer.index + 1} is closer than the spacing to another piece on its sheet`)),
   ].filter((w): w is string => !!w)
+  // object warnings: a dot on the object's row in the Objects list
+  const byItem = new Map(project.items.map(it => [it.id, [
+    it.z + itemHeight(it) > total + 0.01 && 'Reaches below the stack',
+    lidWarning(it),
+    conflicts.has(it.id) && 'Breaks the min. wall',
+  ].filter((w): w is string => !!w)]))
+  for (const dot of $('items').querySelectorAll<HTMLElement>('.warn')) {
+    const w = byItem.get(dot.dataset.item!) ?? []
+    dot.hidden = !w.length
+    dot.dataset.tip = w.join(' · ')
+  }
   const el = $('warnings')
   el.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : ''
   el.dataset.tip = warnings.join(' · ')
@@ -1386,6 +1405,10 @@ const view3d = new View3D($('view3d'), select, () => renderCamera(), i => {
   layerIndex = i
   scheduleViews()
 })
+// Tab cycles the objects under the last click, in the view clicked last
+let tabView: View2D | View3D = view2d
+$('view2d').addEventListener('pointerdown', () => (tabView = view2d))
+$('view3d').addEventListener('pointerdown', () => (tabView = view3d))
 applyTheme(pref('theme') ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'))
 
 const splitter = $('splitter')
@@ -1444,18 +1467,36 @@ explode.ondblclick = () => {
 for (const axis of ['x', 'y'] as const) {
   const slider = $(`section-${axis}`)
   const [from, to] = slider.querySelectorAll('input')
+  const invert = $(`invert-${axis}`) as HTMLButtonElement
   const update = (moved?: HTMLInputElement) => {
     // handles may not cross: the moved one stops at the other
     if (from.valueAsNumber > to.valueAsNumber) moved!.value = (moved === from ? to : from).value
-    view3d.setSection(axis, from.valueAsNumber / 1000, to.valueAsNumber / 1000)
+    // nothing lies outside the whole range: invert is off there, but remembered for when a handle moves in
+    invert.disabled = from.valueAsNumber === 0 && to.valueAsNumber === 1000
+    const inverted = !invert.disabled && invert.classList.contains('active')
+    slider.classList.toggle('inverted', inverted)
+    view3d.setSection(axis, from.valueAsNumber / 1000, to.valueAsNumber / 1000, inverted)
     slider.style.setProperty('--from', String(from.valueAsNumber / 1000))
     slider.style.setProperty('--to', String(to.valueAsNumber / 1000))
   }
   from.oninput = () => update(from)
   to.oninput = () => update(to)
+  // a click on the track moves the nearest handle there (the inputs only take clicks on their handles)
+  slider.onpointerdown = e => {
+    if (e.target !== slider) return
+    const r = slider.getBoundingClientRect(), v = Math.round(Math.max(0, Math.min(1, (e.clientX - r.left - 7) / (r.width - 14))) * 1000)
+    const near = Math.abs(v - from.valueAsNumber) < Math.abs(v - to.valueAsNumber) || v < from.valueAsNumber ? from : to
+    near.value = String(v)
+    update(near)
+  }
+  invert.onclick = () => {
+    invert.classList.toggle('active')
+    update()
+  }
   const reset = () => {
     from.value = '0'
     to.value = '1000'
+    invert.classList.remove('active')
     update()
   }
   slider.ondblclick = reset
@@ -1534,15 +1575,16 @@ function updateChrome() {
   groupTool.dataset.tip = grouped ? 'Ungroup (⇧⌘G / Ctrl+Shift+G)' : 'Group: move, rotate and sink together (⌘/Ctrl+G)'
   undoTool.disabled = !history.canUndo
   redoTool.disabled = !history.canRedo
-  $('hint').textContent = exporting
-    ? 'Drag a piece to move it, also onto another sheet · drag its handle to turn it (Ctrl 15°), double-click or R by 90° · Re-pack lays all out again · ⌘Z undo · Esc back to the design'
+  // [keys] stay bright, the explanations are dimmer
+  $('hint').innerHTML = (exporting
+    ? 'Drag a piece to move it, also onto another sheet · drag its handle to turn it ([Ctrl] 15°), double-click or [R] by 90° · Re-pack lays all out again · [⌘Z] undo · [Esc] back to the design'
     : view2d.isDrawing
-    ? 'Click to add corners · click the first one, double-click or Enter to finish · Backspace removes the last · Esc cancels'
+    ? 'Click to add corners · click the first one, double-click or [Enter] to finish · [Backspace] removes the last · [Esc] cancels'
     : selection.length > 1
-    ? 'Drag one to move them all · Shift-click adds or removes · align them with the align tool · ⌘G group, ⇧⌘G ungroup · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
+    ? 'Drag one to move them all · [Shift]-click adds or removes · align them with the align tool · [⌘G] group, [⇧⌘G] ungroup · [arrows] nudge ([Shift] ×10) · [Del] delete · [⌘D] duplicate · [Esc] deselect · [⌘Z] undo'
     : it
-    ? 'Drag to move · Shift-click selects more · Ctrl snaps · drag handle to rotate (Ctrl 15°) · arrows nudge (Shift ×10) · Del delete · ⌘D duplicate · Esc deselect · ⌘Z undo'
-    : 'B C L S add · Tab next object under the click · A arrange evenly, ⇧A pack · F fit 3D · PgUp / PgDn layer · 1 / 2 / 3 layout · wheel zoom, drag background to pan · drag a field label to scrub · ⌘Z undo'
+    ? 'Drag to move · [Shift]-click selects more · [Ctrl] snaps · drag handle to rotate ([Ctrl] 15°) · [arrows] nudge ([Shift] ×10) · [Del] delete · [⌘D] duplicate · [Esc] deselect · [⌘Z] undo'
+    : '[B C L S] add · [Tab] next object under the click · [A] arrange evenly, [⇧A] pack · [F] fit 3D · [PgUp / PgDn] layer · [1 / 2 / 3] layout · wheel zoom, drag background to pan · drag a field label to scrub · [⌘Z] undo').replace(/\[(.+?)\]/g, '<kbd>$1</kbd>')
 }
 
 let frame = 0
@@ -1632,7 +1674,7 @@ addEventListener('keydown', e => {
   else if (plain && key === 'p') startPolygon()
   else if (plain && key === 'f') view3d.fit()
   else if (e.key === 'PageUp' || e.key === 'PageDown') stepLayer(e.key === 'PageUp' ? -1 : 1)
-  else if (e.key === 'Tab') view2d.cycle(e.shiftKey ? -1 : 1)
+  else if (e.key === 'Tab') tabView.cycle(e.shiftKey ? -1 : 1)
   else if (plain && LAYOUT_KEYS[key]) {
     setLayout(LAYOUT_KEYS[key])
     renderLayout()

@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js'
 import { LineSegments2 } from 'three/addons/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js'
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js'
 import { booleanOpDWithPolyTree, ClipType, FillRule, PolyTreeD, type PolyPathD } from 'clipper2-ts'
 import { caseSection, objectOutline, resting, roundedRect, stackTotal, type Layer } from './geometry'
 import { deepest, groupOf, itemHeight, type CaseDims, type Item, type Project } from './model'
@@ -16,6 +17,8 @@ const FIT_MARGIN = 1.1
 const CUBE = 56 // px, view cube edge
 const TURN_MS = 300 // view cube camera turn
 const CURRENT_LINE = 5 // px, edges of the current layer
+const OUTLINE = 2.5 // px, around selected objects, also through the foam
+const WANTED = { color: '#ffffff', outline: 0.5 } // selected objects where their Z wants them: colour, outline opacity
 const SHELL = '#7f8fa3' // case and lid
 const OBJECT = '#ff9a3c'
 const LID_HIT = '#ff2a2a' // part of an object above the closed lid
@@ -113,6 +116,15 @@ function ghost(it: Item, bottom: number, color: string, clippingPlanes: THREE.Pl
   return mesh
 }
 
+/** Adds a plain copy of `mesh` (same clipping) on layer 1, the mask `drawOutline` rings: red for selected, green for wanted. */
+function outlined(mesh: THREE.Mesh, color = 0xff0000) {
+  const mask = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({
+    color, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, clippingPlanes: (mesh.material as THREE.Material).clippingPlanes,
+  }))
+  mask.layers.set(1)
+  mesh.add(mask)
+}
+
 /** Translucent walls lofted through `rings` (equal point counts, from roundedRect with PER_CORNER), closed by a flat cap
  * at the last ring, with lines along the first and last ring and where the corner arcs start and end. */
 function shell(rings: THREE.Vector3[][], opacity: number, lineWidth: number): THREE.Object3D[] {
@@ -172,10 +184,32 @@ export class View3D {
   private shown = 0 // gap as shown: springs after `gap()`, so the layers wobble
   private gapSpeed = 0
   private moving = 0 // animation frame of the explode motion
-  /** The Z field is being edited: the wanted position of selected objects is shown strong, where they sit faint. */
+  /** The Z field is hovered or edited: the wanted position of selected objects is shown strong and outlined, where they sit faint. */
   private editingZ = false
   private accent = '#3d8bff' // set by setTheme
   private renderer = new THREE.WebGLRenderer({ antialias: true })
+  private outlining = false // something is selected
+  private mask = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false })
+  private ring = { mask: { value: this.mask.texture }, texel: { value: new THREE.Vector2() }, color: { value: new THREE.Color() }, wanted: { value: new THREE.Color(WANTED.color) } }
+  // pixels outside a mask channel but within OUTLINE of it, per channel; where the rings cross, the wanted one lies translucent over the selected
+  private outline = new FullScreenQuad(new THREE.ShaderMaterial({
+    defines: { R: Math.ceil(OUTLINE * devicePixelRatio), WANTED_ALPHA: WANTED.outline.toFixed(2) },
+    uniforms: this.ring,
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+    fragmentShader: `
+      uniform sampler2D mask; uniform vec2 texel; uniform vec3 color; uniform vec3 wanted; varying vec2 vUv;
+      void main() {
+        vec2 here = texture2D(mask, vUv).rg, near = vec2(0.0);
+        for (int x = -R; x <= R; x++) for (int y = -R; y <= R; y++)
+          if (x * x + y * y <= R * R) near = max(near, texture2D(mask, vUv + vec2(x, y) * texel).rg);
+        vec4 c = near.x > 0.5 && here.x < 0.5 ? vec4(color, 1.0) : vec4(0.0);
+        if (near.y > 0.5 && here.y < 0.5) c = vec4(mix(c.rgb, wanted, WANTED_ALPHA / max(c.a, WANTED_ALPHA)), max(c.a, WANTED_ALPHA));
+        if (c.a == 0.0) discard;
+        gl_FragColor = c;
+        #include <colorspace_fragment>
+      }`,
+    transparent: true, depthTest: false, depthWrite: false,
+  }))
   private scene = new THREE.Scene()
   private perspective = new THREE.PerspectiveCamera(35, 1, 1, 50000)
   private orthographic = new THREE.OrthographicCamera(-1, 1, 1, -1, -50000, 50000)
@@ -185,11 +219,13 @@ export class View3D {
   private viewHeight = 400 // orthographic frustum height in mm at zoom 1
   /** Visible range per plan axis as fractions of the case extent (0..1). */
   private sections = { x: [0, 1], y: [0, 1] }
+  private inverted = { x: false, y: false } // shows only what is outside the range
   private extent = { x: 0, y: 0 } // half case size per plan axis
   private ghosts: THREE.Mesh[] = []
   private slabs: THREE.Mesh[] = []
   private box: CaseDims | null = null
   private last: Parameters<View3D['update']> | null = null
+  private pick: THREE.Ray | null = null // last click, for Tab cycling
 
   /** Set when a view cube click switched to orthographic; the next rotation switches back to perspective. */
   private autoOrtho = false
@@ -200,7 +236,7 @@ export class View3D {
    * `onProjection` is called when the camera switches between orthographic and perspective on its own,
    * `onLayer` when a foam layer is clicked; `onSelect` gets `add` for a Shift-click.
    */
-  constructor(private host: HTMLElement, onSelect: (id: string | null, add: boolean) => void, private onProjection: () => void, onLayer: (index: number) => void) {
+  constructor(private host: HTMLElement, private onSelect: (id: string | null, add: boolean) => void, private onProjection: () => void, onLayer: (index: number) => void) {
     this.renderer.setPixelRatio(devicePixelRatio)
     this.renderer.localClippingEnabled = true
     const canvas = this.renderer.domElement
@@ -218,6 +254,7 @@ export class View3D {
       const r = canvas.getBoundingClientRect()
       const ray = new THREE.Raycaster()
       ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), this.camera)
+      this.pick = ray.ray.clone()
       const hit = ray.intersectObjects([...this.ghosts, ...this.slabs])[0]?.object.userData
       if (hit?.layer !== undefined) onLayer(hit.layer)
       else if (hit?.id || !e.shiftKey) onSelect(hit?.id ?? null, e.shiftKey)
@@ -227,6 +264,22 @@ export class View3D {
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x8090a0, 1.6), sun, this.content)
     this.controls.addEventListener('change', () => this.draw())
     new ResizeObserver(() => this.resize()).observe(host)
+  }
+
+  /** Tab: selects the next (`step` 1) or previous object along the last click's ray, through the foam. */
+  cycle(step: number) {
+    if (!this.pick || !this.last) return
+    const selection = this.last[2]
+    const ids = [...new Set(new THREE.Raycaster(this.pick.origin, this.pick.direction).intersectObjects(this.ghosts).map(h => h.object.userData.id as string))]
+    if (!ids.length) return
+    let i = ids.findIndex(id => selection.includes(id))
+    if (i < 0) i = -step // none of them selected: start at the nearest
+    // skip the rest of a selected group
+    for (let k = 0; k < ids.length; k++) {
+      i = (i + step + ids.length) % ids.length
+      if (!selection.includes(ids[i])) break
+    }
+    this.onSelect(ids[i], false)
   }
 
   get isOrthographic() {
@@ -254,8 +307,9 @@ export class View3D {
     this.draw()
   }
 
-  setSection(axis: 'x' | 'y', from: number, to: number) {
+  setSection(axis: 'x' | 'y', from: number, to: number, inverted: boolean) {
     this.sections[axis] = [from, to]
+    this.inverted[axis] = inverted
     if (this.last) this.update(...this.last)
   }
 
@@ -280,6 +334,9 @@ export class View3D {
     const { clientWidth: w, clientHeight: h } = this.host
     if (!w || !h) return // hidden pane
     this.renderer.setSize(w, h)
+    const size = this.renderer.getDrawingBufferSize(new THREE.Vector2())
+    this.mask.setSize(size.x, size.y)
+    this.ring.texel.value.set(1 / size.x, 1 / size.y)
     this.updateFrustums(w / h)
     this.draw()
   }
@@ -294,9 +351,25 @@ export class View3D {
 
   private draw() {
     this.renderer.render(this.scene, this.camera)
+    if (this.outlining) this.drawOutline()
     // the view cube shows the camera's rotation (three's y-up frame mirrored into CSS's y-down frame)
     const e = new THREE.Matrix4().makeRotationFromQuaternion(this.camera.quaternion).invert().elements
     this.cube.style.transform = `matrix3d(${e[0]},${-e[1]},${e[2]},0,${-e[4]},${e[5]},${-e[6]},0,${e[8]},${-e[9]},${e[10]},0,0,0,0,1)`
+  }
+
+  /** Rings the selected objects (their masks on layer 1) over the drawn view. */
+  private drawOutline() {
+    const r = this.renderer, background = this.scene.background
+    this.scene.background = null
+    this.camera.layers.set(1)
+    r.setRenderTarget(this.mask)
+    r.render(this.scene, this.camera)
+    r.setRenderTarget(null)
+    this.camera.layers.set(0)
+    this.scene.background = background
+    r.autoClear = false
+    this.outline.render(r)
+    r.autoClear = true
   }
 
   /** Small cube top right; clicking a face looks at the case from that side. */
@@ -430,7 +503,7 @@ export class View3D {
    * Animates the explode: the gap springs after `gap()` (`spring` rad/s, `damping` ratio), so the layers wobble when it stops.
    * Objects are thrown up when their layer slows faster than `gravity` (longer half case sides per s²), which waits `coyote` s after takeoff.
    */
-  private move(spring = 30, damping = 0.4, gravity = 40, coyote = 0.25) {
+  private move(spring = 30, damping = 0.4, gravity = 90, coyote = 0.17) {
     if (this.moving) return
     let last = performance.now()
     const step = (now: number) => {
@@ -497,13 +570,16 @@ export class View3D {
     this.last = [p, layers, selection, current]
     this.extent = { x: Math.max(p.box.topL, p.box.bottomL) / 2, y: Math.max(p.box.topW, p.box.bottomW) / 2 }
     const { x: [x0, x1], y: [y0, y1] } = this.sectionBounds()
-    const sectioned = [x0, x1, y0, y1].some(Number.isFinite)
+    const sectioned = [x0, x1, y0, y1].some(Number.isFinite) || this.inverted.x || this.inverted.y
+    // the shown part as boxes [x0, x1, y0, y1]: an inverted axis shows both sides outside its range
+    const spans = (a: number, b: number, inverted: boolean) => (inverted ? [[-Infinity, a], [b, Infinity]].filter(([s, e]) => s < e) : [[a, b]])
+    const boxes = spans(x0, x1, this.inverted.x).flatMap(([a, b]) => spans(y0, y1, this.inverted.y).map(([c, d]) => [a, b, c, d]))
     // foam is cut as real geometry so its section faces are solid; objects use clipping planes (plan y is three z), the case stays whole
     const clamp = (v: number) => Math.max(-FAR, Math.min(FAR, v))
-    const rect = [{ x: clamp(x0), y: clamp(y0) }, { x: clamp(x1), y: clamp(y0) }, { x: clamp(x1), y: clamp(y1) }, { x: clamp(x0), y: clamp(y1) }]
+    const rects = boxes.map(([a, b, c, d]) => [{ x: clamp(a), y: clamp(c) }, { x: clamp(b), y: clamp(c) }, { x: clamp(b), y: clamp(d) }, { x: clamp(a), y: clamp(d) }])
     const cut = (v: number, normal: THREE.Vector3Tuple, point: THREE.Vector3Tuple) =>
       Number.isFinite(v) ? [new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(...normal), new THREE.Vector3(...point))] : []
-    const planes = [...cut(x0, [1, 0, 0], [x0, 0, 0]), ...cut(x1, [-1, 0, 0], [x1, 0, 0]), ...cut(y0, [0, 0, 1], [0, 0, y0]), ...cut(y1, [0, 0, -1], [0, 0, y1])]
+    const clips = boxes.map(([a, b, c, d]) => [...cut(a, [1, 0, 0], [a, 0, 0]), ...cut(b, [-1, 0, 0], [b, 0, 0]), ...cut(c, [0, 0, 1], [0, 0, c]), ...cut(d, [0, 0, -1], [0, 0, d])])
 
     this.content.traverse(o => {
       if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
@@ -525,7 +601,7 @@ export class View3D {
       let tree = layer.tree
       if (sectioned) {
         tree = new PolyTreeD()
-        booleanOpDWithPolyTree(ClipType.Intersection, layer.paths, [rect], tree, FillRule.EvenOdd, 3)
+        booleanOpDWithPolyTree(ClipType.Intersection, layer.paths, rects, tree, FillRule.EvenOdd, 3)
       }
       const shapes: THREE.Shape[] = []
       collectShapes(tree, shapes)
@@ -554,19 +630,29 @@ export class View3D {
       const bottom = -(foamTop + z + h), n = layer >= 0 ? steps(layer) : 0
       const selected = selection.includes(it.id), color = selected ? this.accent : OBJECT
       const moved = selected && Math.abs(z - it.z) > 0.01
-      if (moved) wanted.push(thrown(ghost(it, -(foamTop + it.z + h), color, planes, this.editingZ ? OPACITY.strong : OPACITY.faint), n))
       const opacity = moved && this.editingZ ? OPACITY.editing : OPACITY.strong
       const excess = -(foamTop + z + p.box.lidDepth) // how far it reaches above the closed lid
-      if (excess <= 0) return [thrown(ghost(it, bottom, color, planes, opacity), n)]
-      // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
-      const lid = bottom + h - excess
-      const below = new THREE.Plane(new THREE.Vector3(0, -1, 0), lid), above = new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)
-      return [
-        thrown(ghost(it, bottom, color, [...planes, below], opacity), n, [below, above]),
-        thrown(ghost(it, bottom, LID_HIT, [...planes, above], opacity), n),
-      ]
+      // one copy per shown box, clipped to it
+      return clips.flatMap(planes => {
+        if (moved) {
+          const g = ghost(it, -(foamTop + it.z + h), WANTED.color, planes, this.editingZ ? OPACITY.strong : OPACITY.faint)
+          if (this.editingZ) outlined(g, 0x00ff00)
+          wanted.push(thrown(g, n))
+        }
+        if (excess <= 0) return [thrown(ghost(it, bottom, color, planes, opacity), n)]
+        // split at the lid ceiling (measured on the item, so it also holds in the exploded view): the part above is red
+        const lid = bottom + h - excess
+        const below = new THREE.Plane(new THREE.Vector3(0, -1, 0), lid), above = new THREE.Plane(new THREE.Vector3(0, 1, 0), -lid)
+        return [
+          thrown(ghost(it, bottom, color, [...planes, below], opacity), n, [below, above]),
+          thrown(ghost(it, bottom, LID_HIT, [...planes, above], opacity), n),
+        ]
+      })
     })
     const shell = [...caseShell(p.box), ...(p.box.lidDepth > 0 ? lidShell(p.box) : [])]
+    for (const g of this.ghosts) if (selection.includes(g.userData.id)) outlined(g)
+    this.outlining = selection.length > 0
+    this.ring.color.value.set(this.accent)
     this.content.add(...this.ghosts, ...wanted, ...shell)
     this.applyExplode()
 
